@@ -1,29 +1,71 @@
 /*
- * --- Revised 3-Clause BSD License ---
- * Copyright Semtech Corporation 2022. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- *
- *     * Redistributions of source code must retain the above copyright notice,
- *       this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright notice,
- *       this list of conditions and the following disclaimer in the documentation
- *       and/or other materials provided with the distribution.
- *     * Neither the name of the Semtech corporation nor the names of its
- *       contributors may be used to endorse or promote products derived from this
- *       software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL SEMTECH CORPORATION. BE LIABLE FOR ANY DIRECT,
- * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * 模块概述
+ * ========
+ * 本模块实现了 LoRaWAN 基站的异步IO系统，提供高效的非阻塞IO操作支持。
+ * 它基于select机制实现事件驱动的IO多路复用，支持同时处理多个IO通道。
+ * 该模块是基站网络通信、设备控制等功能的基础设施。
+ * 
+ * 文件功能
+ * ========
+ * 本文件实现了异步IO系统的核心功能：
+ * - 异步IO句柄的管理和分配
+ * - 基于select的事件循环
+ * - IO事件的回调处理
+ * - 文件描述符的生命周期管理
+ * 
+ * 主要组件
+ * ========
+ * 1. IO句柄管理
+ *    - aio_t结构体：封装IO操作相关信息
+ *    - 句柄池管理：固定大小的句柄数组
+ *    - 句柄分配和回收机制
+ * 
+ * 2. 事件循环系统
+ *    - select多路复用
+ *    - 读写事件处理
+ *    - 定时器集成（基于timerfd）
+ *    - 事件分发机制
+ * 
+ * 3. 回调接口
+ *    - 读写回调函数注册
+ *    - 上下文管理
+ *    - 错误处理
+ * 
+ * 关键流程
+ * ========
+ * 1. IO操作流程
+ *    - 句柄初始化和配置
+ *    - 事件监听和触发
+ *    - 回调函数执行
+ *    - 资源清理
+ * 
+ * 2. 事件处理流程
+ *    - 文件描述符集合准备
+ *    - select等待
+ *    - 事件检测和分发
+ *    - 回调函数调用
+ * 
+ * 3. 资源管理流程
+ *    - 句柄分配检查
+ *    - 文件描述符设置
+ *    - 资源释放
+ * 
+ * 注意事项
+ * ========
+ * 1. 性能考虑
+ *    - select的扩展性限制
+ *    - 句柄数量上限(N_AIO_HANDLES)
+ *    - 回调函数执行时间
+ * 
+ * 2. 资源管理
+ *    - 及时关闭未使用的句柄
+ *    - 避免句柄泄漏
+ *    - 正确处理回调上下文
+ * 
+ * 3. 错误处理
+ *    - 系统调用失败处理
+ *    - 资源耗尽情况
+ *    - 回调函数异常
  */
 
 #include <unistd.h>

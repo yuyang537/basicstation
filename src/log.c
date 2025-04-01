@@ -1,29 +1,77 @@
 /*
- * --- Revised 3-Clause BSD License ---
- * Copyright Semtech Corporation 2022. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- *
- *     * Redistributions of source code must retain the above copyright notice,
- *       this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright notice,
- *       this list of conditions and the following disclaimer in the documentation
- *       and/or other materials provided with the distribution.
- *     * Neither the name of the Semtech corporation nor the names of its
- *       contributors may be used to endorse or promote products derived from this
- *       software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL SEMTECH CORPORATION. BE LIABLE FOR ANY DIRECT,
- * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * 模块概述
+ * ========
+ * 本模块实现了 LoRaWAN 基站的日志系统，提供了灵活且可配置的日志记录功能。
+ * 它支持多个日志级别和模块标识，使得系统运行状态和调试信息可以被有效地跟踪和管理。
+ * 该模块与系统的其他部分紧密集成，为问题诊断和系统监控提供重要支持。
+ * 
+ * 文件功能
+ * ========
+ * 本文件实现了日志系统的核心功能：
+ * - 日志级别控制和过滤
+ * - 模块化的日志标识
+ * - 格式化日志输出
+ * - 日志缓冲区管理
+ * - 多进程日志支持
+ * 
+ * 主要组件
+ * ========
+ * 1. 日志级别系统
+ *    - 8个日志级别(XDEBUG到CRITICAL)
+ *    - 每个模块独立的日志级别控制
+ *    - 日志级别解析和设置接口
+ * 
+ * 2. 模块标识系统
+ *    - 15个系统模块标识
+ *    - 从机进程特殊标识
+ *    - 模块名称映射表
+ * 
+ * 3. 日志格式化
+ *    - 时间戳生成
+ *    - 模块和级别标识
+ *    - 可变参数处理
+ *    - 特殊格式支持
+ * 
+ * 4. 缓冲区管理
+ *    - 固定大小的日志行缓冲
+ *    - 缓冲区溢出保护
+ *    - 刷新机制
+ * 
+ * 关键流程
+ * ========
+ * 1. 日志记录流程
+ *    - 日志级别检查
+ *    - 头部信息生成
+ *    - 消息格式化
+ *    - 缓冲区写入
+ *    - 日志刷新
+ * 
+ * 2. 配置管理流程
+ *    - 日志级别解析
+ *    - 模块配置更新
+ *    - 从机标识设置
+ * 
+ * 3. 输出控制流程
+ *    - 标准输出处理
+ *    - 特殊格式处理
+ *    - IO刷新控制
+ * 
+ * 注意事项
+ * ========
+ * 1. 性能考虑
+ *    - 日志级别过滤的效率
+ *    - 缓冲区大小限制(LOGLINE_LEN)
+ *    - 格式化开销
+ * 
+ * 2. 资源管理
+ *    - 及时刷新缓冲区
+ *    - 避免缓冲区溢出
+ *    - 合理使用特殊日志功能
+ * 
+ * 3. 使用建议
+ *    - 适当设置日志级别
+ *    - 正确使用模块标识
+ *    - 注意日志信息的完整性
  */
 
 #include "s2conf.h"
