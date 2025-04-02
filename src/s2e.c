@@ -111,6 +111,8 @@
 #include "s2e.h"
 #include "kwcrc.h"
 #include "timesync.h"
+#include <assert.h>
+#include <klee/klee.h>
 
 
 u1_t s2e_dcDisabled;    // no duty cycle limits - override for test/dev
@@ -148,6 +150,8 @@ static int s2e_canTxOK (s2ctx_t* s2ctx, txjob_t* txjob, int* ccaDisabled) {
 
 
 void s2e_ini (s2ctx_t* s2ctx) {
+    SAFE_ASSERT(s2ctx != NULL, "s2ctx 指针为空");
+    
     if( s2e_joineuiFilter == NULL )
         s2e_joineuiFilter = rt_mallocN(uL_t, 2*MAX_JOINEUI_RANGES+2);  // need min one trailing 0 entry
 
@@ -167,6 +171,10 @@ void s2e_ini (s2ctx_t* s2ctx) {
     }
     rt_iniTimer(&s2ctx->bcntimer, s2e_bcntimeout);
     s2ctx->bcntimer.ctx = s2ctx;
+
+    // 符号化关键参数
+    SYMBOLIZE_INPUT(s2ctx->dc_chnlRate, sizeof(s2ctx->dc_chnlRate));
+    ASSUME_RANGE(s2ctx->dc_chnlRate, 0, 100);
 }
 
 
@@ -596,6 +604,19 @@ static int s2e_canTxPerChnlDC (s2ctx_t* s2ctx, txjob_t* txjob, int* ccaDisabled)
 // to kick start s2e_nextTxAction
 //
 int s2e_addTxjob (s2ctx_t* s2ctx, txjob_t* txjob, int relocate, ustime_t now) {
+    SAFE_ASSERT(s2ctx != NULL, "s2ctx 指针为空");
+    SAFE_ASSERT(txjob != NULL, "txjob 指针为空");
+    
+    // 符号化输入参数
+    SYMBOLIZE_INPUT(txjob->freq, sizeof(txjob->freq));
+    SYMBOLIZE_INPUT(txjob->rps, sizeof(txjob->rps));
+    
+    // 限制频率范围
+    ASSUME_RANGE(txjob->freq, 863000000, 870000000);
+    
+    // 检查发送时间
+    SAFE_ASSERT(now <= txjob->txtime, "发送时间无效");
+    
     ustime_t earliest = now + TX_AIM_GAP;
     u1_t txunit;
     if( !relocate ) {
@@ -1312,6 +1333,15 @@ static int handle_router_config (s2ctx_t* s2ctx, ujdec_t* D) {
 
 // Obsolete message format - newer servers use dnmsg which carries more context!
 void handle_dnframe (s2ctx_t* s2ctx, ujdec_t* D) {
+    SAFE_ASSERT(s2ctx != NULL, "s2ctx 指针为空");
+    SAFE_ASSERT(D != NULL, "ujdec_t 指针为空");
+    
+    // 符号化输入数据
+    u1_t* data = NULL;
+    ujoff_t datalen = 0;
+    SYMBOLIZE_INPUT(datalen, sizeof(datalen));
+    ASSUME_RANGE(datalen, 0, MAX_PAYLOAD_LENGTH);
+    
     ustime_t now = rt_getTime();
     txjob_t* txjob = txq_reserveJob(&s2ctx->txq);
     if( txjob == NULL ) {

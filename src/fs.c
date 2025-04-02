@@ -112,7 +112,8 @@
 
 #include <stdio.h>
 #include <fcntl.h>
-
+#include <assert.h>
+#include <klee/klee.h>
 
 #if defined(CFG_linux) || defined(CFG_flashsim)
 #include <sys/stat.h>
@@ -552,7 +553,36 @@ static int fs_findNextDataRecord (fctx_t* fctx, u2_t ino) {
     return 1;
 }
 
+// 安全断言宏定义
+#define SAFE_ASSERT(cond, msg) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "安全断言失败: %s\n", msg); \
+        abort(); \
+    } \
+} while(0)
+
+// 文件系统安全检查宏
+#define CHECK_FILE_OPERATION(fd, op) do { \
+    SAFE_ASSERT(fd >= 0 && fd < MAX_FD, "文件描述符无效"); \
+    SAFE_ASSERT(fd2fh(fd) != NULL, "文件句柄无效"); \
+} while(0)
+
+// 路径安全检查宏
+#define CHECK_PATH_SAFETY(path) do { \
+    SAFE_ASSERT(path != NULL, "路径指针为空"); \
+    SAFE_ASSERT(strlen(path) < MAX_PATH_LENGTH, "路径长度超出限制"); \
+    SAFE_ASSERT(strstr(path, "..") == NULL, "路径包含非法字符"); \
+} while(0)
+
 int fs_read (int fd, void* dp, int dlen) {
+    SAFE_ASSERT(dp != NULL, "数据缓冲区指针为空");
+    SAFE_ASSERT(dlen > 0, "读取长度必须大于0");
+    
+    CHECK_FILE_OPERATION(fd, "read");
+    
+    // 符号化输入
+    SYMBOLIZE_INPUT(dp, dlen);
+    
     u1_t* data = (u1_t*)dp;
     fh_t* fh = fd2fh(fd);
     if( fh == NULL ) {
@@ -614,6 +644,14 @@ int fs_read (int fd, void* dp, int dlen) {
 
 
 int fs_write (int fd, const void* dp, int dlen) {
+    SAFE_ASSERT(dp != NULL, "数据缓冲区指针为空");
+    SAFE_ASSERT(dlen > 0, "写入长度必须大于0");
+    
+    CHECK_FILE_OPERATION(fd, "write");
+    
+    // 符号化输入
+    SYMBOLIZE_INPUT(dp, dlen);
+    
     const u1_t* data = (const u1_t*)dp;
     fh_t* fh = fd2fh(fd);
     if( fh == NULL ) {
@@ -700,6 +738,16 @@ int fs_unlink (const char* fn) {
 
 
 int fs_rename (const char* from, const char* to) {
+    SAFE_ASSERT(from != NULL, "源文件名指针为空");
+    SAFE_ASSERT(to != NULL, "目标文件名指针为空");
+    
+    CHECK_PATH_SAFETY(from);
+    CHECK_PATH_SAFETY(to);
+    
+    // 符号化文件名
+    SYMBOLIZE_INPUT(from, strlen(from));
+    SYMBOLIZE_INPUT(to, strlen(to));
+    
     int fnlen2 = checkFilename(to);
     int fnlen = checkFilename(from);
     if( fnlen == 0 || fnlen2 == 0 )
@@ -735,6 +783,12 @@ int fs_access (str_t fn, int mode) {
 
 
 int fs_open (str_t fn, int mode, ...) {
+    SAFE_ASSERT(fn != NULL, "文件名指针为空");
+    CHECK_PATH_SAFETY(fn);
+    
+    // 符号化文件名
+    SYMBOLIZE_INPUT(fn, strlen(fn));
+    
     int fnlen = checkFilename(fn);
 #if defined(CFG_linux)
     if( fnlen == -1 ) {

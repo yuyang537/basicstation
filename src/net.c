@@ -118,6 +118,8 @@
 #include "httpd.h"
 #include "tls.h"
 #include "kwcrc.h"
+#include <assert.h>
+#include <klee/klee.h>
 
 str_t const SUFFIX2CT[] = {
     "txt",  "text/plain",
@@ -130,6 +132,24 @@ str_t const SUFFIX2CT[] = {
     NULL, NULL
 };
 
+// 安全断言宏定义
+#define SAFE_ASSERT(cond, msg) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "安全断言失败: %s\n", msg); \
+        abort(); \
+    } \
+} while(0)
+
+// 缓冲区安全检查宏
+#define CHECK_BUFFER_OVERFLOW(buf, size, offset) do { \
+    SAFE_ASSERT((offset) <= (size), "缓冲区溢出"); \
+} while(0)
+
+// URI 安全检查宏
+#define CHECK_URI_SAFETY(uri) do { \
+    SAFE_ASSERT(strlen(uri) < MAX_URI_LENGTH, "URI 长度超出限制"); \
+    SAFE_ASSERT(strchr(uri, ';') == NULL, "URI 包含非法字符"); \
+} while(0)
 
 // --------------------------------------------------------------------------------
 //
@@ -159,6 +179,14 @@ static int nextChar (dbuf_t* b) {
 }
 
 int uri_parse (dbuf_t* b, struct uri_info* u, int skipSchema) {
+    SAFE_ASSERT(b != NULL, "dbuf_t 指针为空");
+    SAFE_ASSERT(u != NULL, "uri_info 指针为空");
+    
+    // 符号化输入
+    char* uri = NULL;
+    SYMBOLIZE_INPUT(uri, MAX_URI_LENGTH);
+    CHECK_URI_SAFETY(uri);
+    
     int c;
     if( !skipSchema ) {
         do {
@@ -898,6 +926,15 @@ dbuf_t ws_getSendbuf (ws_t* conn, int minsize) {
 // b->pos should be the length of the filled in data
 //
 void ws_sendData (ws_t* conn, dbuf_t* b, int binaryData) {
+    SAFE_ASSERT(conn != NULL, "ws_t 指针为空");
+    SAFE_ASSERT(b != NULL, "dbuf_t 指针为空");
+    
+    // 检查数据大小
+    CHECK_BUFFER_OVERFLOW(b->buf, b->size, b->len);
+    
+    // 符号化数据
+    SYMBOLIZE_INPUT(b->buf, b->len);
+    
     if( conn->state != WS_CONNECTED )
         return;
     int n = b->pos;
@@ -1021,6 +1058,13 @@ int ws_getRtt (ws_t* conn, u2_t* q_80_90_95) {
 // HTTP stuff
 //
 // --------------------------------------------------------------------------------
+
+
+
+
+
+
+
 
 
 static void triggerHttpRead (tmr_t* tmr) {
@@ -1155,6 +1199,18 @@ void http_close (http_t* conn) {
 
 
 int http_connect (http_t* conn, char* host, char* port) {
+    SAFE_ASSERT(conn != NULL, "http_t 指针为空");
+    SAFE_ASSERT(host != NULL, "host 指针为空");
+    SAFE_ASSERT(port != NULL, "port 指针为空");
+    
+    // 检查主机名和端口
+    CHECK_URI_SAFETY(host);
+    SAFE_ASSERT(strlen(port) <= 5, "端口号格式无效");
+    
+    // 符号化连接参数
+    SYMBOLIZE_INPUT(host, strlen(host));
+    SYMBOLIZE_INPUT(port, strlen(port));
+    
     if( conn->c.state != HTTP_CLOSED )
         return 0;  // forgot to http_close?
     rt_clrTimer(&conn->c.tmr);

@@ -31,7 +31,8 @@ include ${TD}/setup.gmk
 all:	build-local/bin/crc32 \
 	src/kwcrc.h \
 	deps \
-	s-all
+	s-all \
+	klee-test
 
 # Shortcuts to run station specific goals
 .PHONY: s-all s-load s-clean
@@ -77,3 +78,15 @@ clean super-clean: clean-build
 	for d in deps/*; do \
 	  ${MAKE} -C $$d $@; \
 	done
+
+# KLEE 测试配置
+KLEE_CFLAGS = -g -O0 -emit-llvm
+KLEE_LDFLAGS = -lkleeRuntest
+
+.PHONY: klee-test
+klee-test: build-local/bin/klee-tests
+
+build-local/bin/klee-tests: $(wildcard src/*.c)
+	mkdir -p ${@D}
+	clang $(KLEE_CFLAGS) -Isrc $^ -o $@.bc
+	klee --exit-on-error $@.bc
