@@ -80,7 +80,7 @@ clean super-clean: clean-build
 	done
 
 # KLEE 测试配置
-KLEE_CFLAGS = -emit-llvm -c -g -O0 -Wall -I./src
+KLEE_CFLAGS = -emit-llvm -c -g -O0 -Wall -I./src -I./deps/mbedtls/include
 KLEE_LDFLAGS = -emit-llvm
 KLEE_SOURCES = $(wildcard src/*.c)
 KLEE_BC_FILES = $(KLEE_SOURCES:src/%.c=build-local/bin/%.bc)
@@ -88,7 +88,7 @@ KLEE_TEST_BC = build-local/bin/klee-tests.bc
 
 # KLEE 测试目标
 .PHONY: klee-test
-klee-test: $(KLEE_TEST_BC)
+klee-test: deps $(KLEE_TEST_BC)
 	klee --libc=uclibc --posix-runtime $(KLEE_TEST_BC)
 
 # 编译源文件为 LLVM bitcode
