@@ -80,13 +80,35 @@ clean super-clean: clean-build
 	done
 
 # KLEE 测试配置
-KLEE_CFLAGS = -g -O0 -emit-llvm
-KLEE_LDFLAGS = -lkleeRuntest
+KLEE_CFLAGS = -emit-llvm -c -g -O0 -Wall -I./src
+KLEE_LDFLAGS = -emit-llvm
+KLEE_SOURCES = $(wildcard src/*.c)
+KLEE_BC_FILES = $(KLEE_SOURCES:src/%.c=build-local/bin/%.bc)
+KLEE_TEST_BC = build-local/bin/klee-tests.bc
 
+# KLEE 测试目标
 .PHONY: klee-test
-klee-test: build-local/bin/klee-tests
+klee-test: $(KLEE_TEST_BC)
+	klee --libc=uclibc --posix-runtime $(KLEE_TEST_BC)
 
-build-local/bin/klee-tests: $(wildcard src/*.c)
-	mkdir -p ${@D}
-	clang $(KLEE_CFLAGS) -Isrc $^ -o $@.bc
-	klee --exit-on-error $@.bc
+# 编译源文件为 LLVM bitcode
+build-local/bin/%.bc: src/%.c
+	@mkdir -p build-local/bin
+	clang $(KLEE_CFLAGS) $< -o $@
+
+# 链接所有 bitcode 文件
+$(KLEE_TEST_BC): $(KLEE_BC_FILES)
+	llvm-link $(KLEE_BC_FILES) -o $@
+
+# 清理 KLEE 测试文件
+.PHONY: clean-klee
+clean-klee:
+	rm -f $(KLEE_BC_FILES) $(KLEE_TEST_BC)
+	rm -f klee-last
+	rm -rf klee-out-*
+
+# 更新 all 目标
+all: $(BINS) klee-test
+
+# 更新 clean 目标
+clean: clean-klee
