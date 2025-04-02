@@ -80,7 +80,7 @@ clean super-clean: clean-build
 	done
 
 # KLEE 测试配置
-KLEE_CFLAGS = -emit-llvm -c -g -O0 -Wall -I./src -I./deps/mbedtls/include
+KLEE_CFLAGS = -emit-llvm -c -g -O0 -Wall -I./src -I./deps/mbedtls/platform-linux/include
 KLEE_LDFLAGS = -emit-llvm
 KLEE_SOURCES = $(wildcard src/*.c)
 KLEE_BC_FILES = $(KLEE_SOURCES:src/%.c=build-local/bin/%.bc)
