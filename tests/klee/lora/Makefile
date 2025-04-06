@@ -3,7 +3,7 @@
 
 # 编译器设置
 CC = clang
-CFLAGS = -I../../src -I../../include -emit-llvm -c -g -O0 -Xclang -disable-O0-optnone
+CFLAGS = -I../../src -I../../include -I../../../src -I../../../include -emit-llvm -c -g -O0 -Xclang -disable-O0-optnone
 
 # 源文件
 SRC = klee_lora_test.c
