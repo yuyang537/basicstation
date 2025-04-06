@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <errno.h>
 
 // 首先包含基础类型定义
 #include "../../../src/rt.h"
