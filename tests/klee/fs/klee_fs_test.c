@@ -2,6 +2,16 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <sys/types.h>
+
+// 首先包含基础类型定义
+#include "../../../src/rt.h"
+// 然后包含其他依赖
+#include "../../../src/s2conf.h"
+#include "../../../src/kwcrc.h"
+#include "../../../src/uj.h"
+// 最后包含fs.h
 #include "../../../src/fs.h"
 
 // 符号化输入缓冲区的最大大小
