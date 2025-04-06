@@ -5,7 +5,7 @@ CC = clang
 KLEE = klee
 
 # 编译标志
-CFLAGS = -I../../../src -emit-llvm -c -g -O0 -D_GNU_SOURCE
+CFLAGS = -I../../../src -emit-llvm -c -g -O0 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 LDFLAGS = 
 
 # 源文件

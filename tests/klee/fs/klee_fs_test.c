@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 // 首先包含基础类型定义
 #include "../../../src/rt.h"
