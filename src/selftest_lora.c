@@ -1,5 +1,5 @@
 /*
- * 模块概述
+ * 文件概述
  * ========
  * 本文件实现了LoRaWAN基站的LoRa帧解析功能的自测试用例。这些测试验证了
  * 系统正确解析各种类型的LoRaWAN消息的能力，包括加入请求、数据帧和专有帧等。
@@ -107,8 +107,38 @@
 static const uL_t euiFilter1[] = { 0xEFCDAB8967452300, 0xEFCDAB8967452300, 0 };
 static const uL_t euiFilter2[] = { 0xEFCDAB8967452300, 0xEFCDAB8967452301, 0 };
 
-
-void selftest_lora () {
+/*
+ * 函数：selftest_lora
+ * 功能：LoRa帧解析自测试主函数
+ * 说明：
+ *   该函数实现了LoRa帧解析的全面测试，包括：
+ *   1. 基本格式测试
+ *      - 测试过短帧的处理
+ *      - 验证协议版本检查
+ *      - 测试无效消息类型的处理
+ *   
+ *   2. 消息类型测试
+ *      - 测试加入接受(JACC)消息解析
+ *      - 测试专有帧(PROP)解析
+ *      - 测试加入请求(JREQ)解析
+ *      - 测试数据上行帧(DAUP)解析
+ *   
+ *   3. 过滤器测试
+ *      - 测试Join EUI过滤功能
+ *      - 验证NetID过滤机制
+ *      - 测试过滤规则的边界条件
+ *   
+ *   4. 错误处理测试
+ *      - 测试不完整帧的处理
+ *      - 验证格式错误的识别
+ *      - 测试过滤失败的处理
+ *   
+ *   5. 输出验证
+ *      - 验证JSON输出格式
+ *      - 检查字段值的正确性
+ *      - 确认错误信息的准确性
+ */
+void selftest_lora() {
     char* jsonbuf = rt_mallocN(char, BUFSZ);
 
     ujbuf_t B = { .buf = jsonbuf, .bufsize = BUFSZ, .pos = 0 };

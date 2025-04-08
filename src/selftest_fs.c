@@ -1,5 +1,5 @@
 /*
- * 模块概述
+ * 文件概述
  * ========
  * 本文件实现了LoRaWAN基站文件系统(fs)的自测试用例。这些测试验证了
  * 系统文件操作功能的正确性，包括文件读写、路径处理、文件管理等功能。
@@ -112,8 +112,18 @@
 #include "rt.h"
 #include "fs.h"
 
-
-static void  prt (u1_t mod_level, const char* fmt, ...) {
+/*
+ * 函数：prt
+ * 功能：打印调试信息
+ * 参数：
+ *   - mod_level: 模块级别
+ *   - fmt: 格式化字符串
+ *   - ...: 可变参数列表
+ * 说明：
+ *   该函数用于在测试过程中输出调试信息，使用标准错误输出流。
+ *   主要用于记录测试过程中的关键步骤和状态信息。
+ */
+static void prt(u1_t mod_level, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -121,7 +131,24 @@ static void  prt (u1_t mod_level, const char* fmt, ...) {
     va_end(ap);
 }
 
-static fsinfo_t printFsInfo (const char* msg, fsinfo_t* ip) {
+/*
+ * 函数：printFsInfo
+ * 功能：打印文件系统信息
+ * 参数：
+ *   - msg: 信息标题
+ *   - ip: 文件系统信息结构体指针
+ * 返回值：
+ *   返回文件系统信息结构体
+ * 说明：
+ *   该函数用于打印文件系统的详细信息，包括：
+ *   - 闪存基本信息（基地址、页数、页大小）
+ *   - 活动分区信息
+ *   - 垃圾回收周期
+ *   - 记录数量
+ *   - 已用空间和可用空间
+ *   - 加密密钥信息
+ */
+static fsinfo_t printFsInfo(const char* msg, fsinfo_t* ip) {
     fsinfo_t i;
     if( ip ) {
         i = *ip;
@@ -145,15 +172,43 @@ static fsinfo_t printFsInfo (const char* msg, fsinfo_t* ip) {
     return i;
 }
 
-
 #define TNORM(i, fn, expfn)                                     \
     sz = fs_fnNormalize(fn, norm, sizeof(norm));                \
     fprintf(stderr, "FN%d: (%d) %s\n", i, sz, norm);            \
     TCHECK(sz == strlen(expfn)+1);                              \
     TCHECK(strcmp(norm,expfn)==0);
 
-
-void selftest_fs () {
+/*
+ * 函数：selftest_fs
+ * 功能：文件系统自测试主函数
+ * 说明：
+ *   该函数实现了文件系统的全面测试，包括：
+ *   1. 路径处理测试
+ *      - 验证路径规范化功能
+ *      - 测试相对路径和绝对路径处理
+ *      - 验证特殊路径（.和..）的处理
+ *   
+ *   2. 文件操作测试
+ *      - 测试文件创建和打开
+ *      - 验证文件描述符管理
+ *      - 测试文件关闭操作
+ *   
+ *   3. 读写操作测试
+ *      - 测试不同大小的文件读写
+ *      - 验证分段读写功能
+ *      - 测试文件截断和覆盖
+ *   
+ *   4. 文件系统管理测试
+ *      - 测试文件系统初始化
+ *      - 验证垃圾回收机制
+ *      - 测试空间管理功能
+ *   
+ *   5. 边界条件测试
+ *      - 测试文件系统满的情况
+ *      - 验证资源耗尽处理
+ *      - 测试错误恢复机制
+ */
+void selftest_fs() {
     char norm[32];
     int sz, err, ok;
 

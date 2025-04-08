@@ -1,30 +1,30 @@
 /*
- * 模块概述
+ * 文件概述
  * ========
- * 本模块是 LoRaWAN 基站的 LoRa 帧处理系统，负责解析和构建 LoRaWAN 协议的数据帧。
- * 它实现了对各种 LoRaWAN 消息类型的识别和处理，包括加入请求、数据上行和下行帧。
- * 该模块是基站处理 LoRaWAN 通信的核心组件，确保正确解析和处理终端设备发送的消息。
+ * 本文件实现了LoRaWAN基站的LoRa帧处理系统，负责解析和构建LoRaWAN协议的数据帧。
+ * 它实现了对各种LoRaWAN消息类型的识别和处理，包括加入请求、数据上行和下行帧。
+ * 该模块是基站处理LoRaWAN通信的核心组件，确保正确解析和处理终端设备发送的消息。
  * 
  * 文件功能
  * ========
- * 本源文件实现了 LoRaWAN 帧的基础解析和处理功能：
- * - LoRaWAN 消息类型识别
+ * 本源文件实现了LoRaWAN帧的基础解析和处理功能：
+ * - LoRaWAN消息类型识别
  * - 帧格式解析和验证
  * - 消息内容提取
- * - Join EUI 和 NetID 过滤
- * - 信标（Beacon）帧构建
+ * - Join EUI和NetID过滤
+ * - 信标(Beacon)帧构建
  * 
  * 主要组件
  * ========
  * 1. 帧解析系统
- *    - LoRaWAN 帧格式验证
- *    - 消息类型识别（Join请求、数据帧等）
+ *    - LoRaWAN帧格式验证
+ *    - 消息类型识别(Join请求、数据帧等)
  *    - 帧头和载荷分离
  *    - 消息内容提取
  * 
  * 2. 过滤机制
- *    - Join EUI 过滤表
- *    - NetID 过滤规则
+ *    - Join EUI过滤表
+ *    - NetID过滤规则
  *    - 设备地址验证
  *    - 帧类型筛选
  * 
@@ -32,12 +32,12 @@
  *    - 信标帧构建
  *    - 时间同步数据生成
  *    - 地理位置信息编码
- *    - CRC 校验
+ *    - CRC校验
  * 
  * 4. 辅助功能
- *    - CRC16 计算
+ *    - CRC16计算
  *    - 日志记录
- *    - JSON 编码
+ *    - JSON编码
  * 
  * 关键流程
  * ========
@@ -49,7 +49,7 @@
  *    - 结果格式化
  * 
  * 2. 消息处理流程
- *    - Join 请求处理
+ *    - Join请求处理
  *    - 数据上行消息处理
  *    - 专有帧处理
  *    - 消息内容提取
@@ -58,12 +58,12 @@
  *    - 时间戳编码
  *    - 位置信息编码
  *    - 信息描述符设置
- *    - CRC 计算和添加
+ *    - CRC计算和添加
  * 
  * 注意事项
  * ========
  * 1. 协议兼容性
- *    - 符合 LoRaWAN 1.0 规范
+ *    - 符合LoRaWAN 1.0规范
  *    - 支持的帧类型限制
  *    - 消息格式验证严格性
  * 
@@ -74,7 +74,7 @@
  * 
  * 3. 安全性考虑
  *    - 帧格式验证
- *    - MIC 完整性检查
+ *    - MIC完整性检查
  *    - 过滤机制安全性
  */
 
@@ -163,7 +163,39 @@ uL_t* s2e_joineuiFilter;
 u4_t  s2e_netidFilter[4] = { 0xffFFffFF, 0xffFFffFF, 0xffFFffFF, 0xffFFffFF };
 
 
-int s2e_parse_lora_frame (ujbuf_t* buf, const u1_t* frame , int len, dbuf_t* lbuf) {
+/*
+ * 函数：s2e_parse_lora_frame
+ * 功能：解析LoRaWAN帧
+ * 参数：
+ *   - buf: JSON输出缓冲区
+ *   - frame: 帧数据
+ *   - len: 帧长度
+ *   - lbuf: 日志缓冲区
+ * 返回值：
+ *   成功返回1，失败返回0
+ * 说明：
+ *   该函数实现了LoRaWAN帧的解析，包括：
+ *   1. 帧格式验证
+ *      - 检查帧长度
+ *      - 验证协议版本
+ *      - 确认消息类型
+ *   
+ *   2. 消息类型处理
+ *      - 处理Join请求
+ *      - 处理数据帧
+ *      - 处理专有帧
+ *   
+ *   3. 过滤机制
+ *      - 应用Join EUI过滤
+ *      - 应用NetID过滤
+ *      - 验证设备地址
+ *   
+ *   4. 结果输出
+ *      - 生成JSON格式输出
+ *      - 记录日志信息
+ *      - 返回处理状态
+ */
+int s2e_parse_lora_frame(ujbuf_t* buf, const u1_t* frame, int len, dbuf_t* lbuf) {
     if( len == 0 ) {
     badframe:
         LOG(MOD_S2E|DEBUG, "Not a LoRaWAN frame: %16.4H", len, frame);
@@ -252,6 +284,19 @@ int s2e_parse_lora_frame (ujbuf_t* buf, const u1_t* frame , int len, dbuf_t* lbu
 }
 
 
+/*
+ * 函数：crc16_no_table
+ * 功能：计算CRC16校验值
+ * 参数：
+ *   - pdu: 数据缓冲区
+ *   - len: 数据长度
+ * 返回值：
+ *   返回16位CRC校验值
+ * 说明：
+ *   该函数实现了CRC16校验计算，使用多项式0x1021。
+ *   采用无查表法实现，适用于资源受限环境。
+ *   主要用于验证信标帧的完整性。
+ */
 static int crc16_no_table(uint8_t* pdu, int len) {
     uint32_t remainder = 0;
     uint32_t polynomial = 0x1021;
@@ -274,7 +319,36 @@ static int crc16_no_table(uint8_t* pdu, int len) {
 //    | 0-n |       4    |  2  |     1    |  3  |  3  | 0-n |  2  |   bytes - all fields little endian
 //    | RFU | epoch_secs | CRC | infoDesc | lat | lon | RFU | CRC |
 //
-void s2e_make_beacon (uint8_t* layout, sL_t epoch_secs, int infodesc, double lat, double lon, uint8_t* pdu) {
+/*
+ * 函数：s2e_make_beacon
+ * 功能：构建信标帧
+ * 参数：
+ *   - layout: 帧布局信息
+ *   - epoch_secs: 时间戳
+ *   - infodesc: 信息描述符
+ *   - lat: 纬度
+ *   - lon: 经度
+ *   - pdu: 输出缓冲区
+ * 说明：
+ *   该函数实现了LoRaWAN信标帧的构建，包括：
+ *   1. 帧结构
+ *      - 预留字段(RFU)
+ *      - 时间戳
+ *      - CRC校验
+ *      - 信息描述符
+ *      - 位置信息
+ *   
+ *   2. 数据处理
+ *      - 时间戳编码
+ *      - 位置信息编码
+ *      - CRC计算
+ *   
+ *   3. 帧组装
+ *      - 字段填充
+ *      - 校验和计算
+ *      - 结果输出
+ */
+void s2e_make_beacon(uint8_t* layout, sL_t epoch_secs, int infodesc, double lat, double lon, uint8_t* pdu) {
     int time_off     = layout[0];
     int infodesc_off = layout[1];
     int bcn_len      = layout[2];

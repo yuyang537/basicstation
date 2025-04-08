@@ -1,58 +1,97 @@
 # KLEE测试Makefile
+# =================
 
-# 编译器设置
+# 编译器和工具链设置
 CC = clang
+LLVM_LINK = llvm-link
 KLEE = klee
 
-# 编译标志
-CFLAGS = -I../../../src -emit-llvm -c -g -O0 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -DCFG_linux=1 -DCFG_flashsim=1
-LDFLAGS = 
+# 编译选项
+CFLAGS = -emit-llvm -c -g -O0 \
+         -I../../../src \
+         -D_GNU_SOURCE \
+         -D_POSIX_C_SOURCE=200809L \
+         -D_XOPEN_SOURCE=700 \
+         -DCFG_linux=1 \
+         -DCFG_flashsim=1
 
 # 源文件
 TEST_SRC = klee_fs_test.c
-FS_SRC = ../../../src/fs.c
-TEST_BC = klee_fs_test.bc
-FS_BC = fs.bc
-LINKED_BC = linked.bc
+SRC_FILES = ../../../src/fs.c ../../../src/rt.c
 
-# 目标
-.PHONY: all clean help test
+# 目标文件
+TEST_OBJ = $(TEST_SRC:.c=.bc)
+SRC_OBJS = $(SRC_FILES:.c=.bc)
 
-all: $(LINKED_BC)
+# 最终目标
+TARGET = fs_test.bc
 
-# 编译测试文件
-$(TEST_BC): $(TEST_SRC)
-	$(CC) $(CFLAGS) $< -o $@
+# 默认目标
+all: $(TARGET)
 
-# 编译文件系统源文件
-$(FS_BC): $(FS_SRC)
-	$(CC) $(CFLAGS) $< -o $@
+# 链接目标文件
+$(TARGET): $(TEST_OBJ) $(SRC_OBJS)
+	$(LLVM_LINK) -o $@ $^
 
-# 链接生成的字节码文件
-$(LINKED_BC): $(TEST_BC) $(FS_BC)
-	llvm-link $^ -o $@
+# 编译测试源文件
+%.bc: %.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+# 编译项目源文件
+../../../src/%.bc: ../../../src/%.c
+	$(CC) $(CFLAGS) -o $@ $<
 
 # 运行KLEE测试
-test: $(LINKED_BC)
-	$(KLEE) --libc=uclibc --posix-runtime $<
+test: $(TARGET)
+	$(KLEE) --libc=uclibc --posix-runtime \
+		--max-memory=1000 \
+		--max-time=3600 \
+		--output-dir=klee-out \
+		--optimize \
+		--use-cex-cache \
+		--use-branch-cache \
+		--use-independent-solver \
+		--use-forked-solver \
+		--max-sym-array-size=4096 \
+		--max-solver-time=30 \
+		--max-static-fork-pct=1 \
+		--max-static-solve-pct=1 \
+		--max-static-cpfork-pct=1 \
+		--switch-type=internal \
+		--randomize-fork \
+		--search=random-path \
+		--use-batching-search \
+		$(TARGET)
 
-# 清理生成的文件
+# 分析测试结果
+analyze:
+	@echo "分析KLEE测试结果..."
+	@echo "===================="
+	@echo "1. 测试统计:"
+	@klee-stats klee-out
+	@echo "\n2. 错误报告:"
+	@find klee-out -name "test*.err" -exec cat {} \;
+	@echo "\n3. 覆盖率报告:"
+	@klee-coverage klee-out
+
+# 清理目标
 clean:
-	rm -f *.bc
+	rm -f *.bc *.ll
+	rm -rf klee-out
+	rm -f *.err
 	rm -f *.o
-	rm -rf klee-*
+	rm -f *.gcno *.gcda
+	rm -f *.info
 
 # 帮助信息
 help:
 	@echo "KLEE文件系统测试Makefile"
-	@echo ""
-	@echo "可用目标："
+	@echo "========================="
+	@echo "可用目标:"
 	@echo "  all     - 编译所有源文件"
 	@echo "  test    - 运行KLEE符号执行测试"
-	@echo "  clean   - 清理生成的文件"
+	@echo "  analyze - 分析测试结果"
+	@echo "  clean   - 清理编译产物"
 	@echo "  help    - 显示此帮助信息"
-	@echo ""
-	@echo "使用方法："
-	@echo "  make        - 编译所有文件"
-	@echo "  make test   - 运行KLEE测试"
-	@echo "  make clean  - 清理文件" 
+
+.PHONY: all test analyze clean help 

@@ -1,85 +1,25 @@
-/*
- * 模块概述
- * ========
- * 本模块实现了LoRaWAN基站的文件系统，提供可靠的闪存存储功能。该文件系统
- * 专为嵌入式系统设计，具有低内存占用和高可靠性特点，支持基站配置、凭证
- * 和运行时数据的持久化存储。
+/**
+ * @file fs.c
+ * @brief 文件系统实现文件
  * 
- * 文件功能
- * ========
- * 本文件主要实现以下功能：
- * - 闪存分区管理（双区段设计用于垃圾回收）
- * - 文件记录创建、读取和删除
- * - 闪存加密读写操作
- * - 文件系统初始化和一致性检查
- * - 垃圾回收和空间优化
- * - 文件描述符管理
+ * 该文件实现了基于闪存的简单文件系统。文件系统使用两个分区交替写入，
+ * 支持基本的文件操作，并包含垃圾回收机制。
  * 
- * 主要组件
- * ========
- * 1. 闪存驱动层
- *    - 闪存读写抽象
- *    - 数据加密/解密
- *    - 页擦除操作
- *    - 地址管理
+ * 文件系统组织：
+ * 1. 闪存被组织为32位字
+ * 2. 整个空间被分为两个分区
+ * 3. 当一个分区满时，垃圾回收会将有效数据复制到另一个分区
+ * 4. 每个分区包含一个魔数+GC序列计数器
+ * 5. 每次GC操作都会增加序列计数器
+ * 6. 通过比较两个分区的魔数可以确定哪个分区更新
  * 
- * 2. 文件记录系统
- *    - 记录头尾标签结构
- *    - 文件索引节点(inode)管理
- *    - CRC数据完整性检查
- *    - 文件、数据、重命名和删除操作
+ * 记录格式：
+ * [begtag] ... [endtag]
  * 
- * 3. 垃圾回收系统
- *    - 双区段交替使用
- *    - 活动数据迁移
- *    - 序列计数器管理
- *    - 空间压缩
- * 
- * 4. 文件操作接口
- *    - POSIX风格文件API
- *    - 文件描述符表
- *    - 路径规范化
- *    - 目录操作
- * 
- * 关键流程
- * ========
- * 1. 文件系统初始化流程
- *    - 闪存区段检查
- *    - 魔数和序列号验证
- *    - 活动区段确定
- *    - 文件系统一致性检查
- * 
- * 2. 文件操作流程
- *    - 路径解析和inode查找
- *    - 记录定位和读写操作
- *    - 数据块链接管理
- *    - 文件描述符分配与释放
- * 
- * 3. 垃圾回收流程
- *    - 空间阈值触发
- *    - 活动数据识别
- *    - 数据迁移到备用区段
- *    - 旧区段擦除
- * 
- * 注意事项
- * ========
- * 1. 闪存限制
- *    - 擦写次数有限（需优化垃圾回收）
- *    - 只能按页擦除
- *    - 写入前必须擦除
- *    - 地址对齐要求
- * 
- * 2. 可靠性机制
- *    - 记录CRC校验
- *    - 双区段冗余设计
- *    - 事务型操作支持
- *    - 掉电恢复能力
- * 
- * 3. 性能考虑
- *    - 缓存机制减少闪存访问
- *    - 文件索引优化查找速度
- *    - 垃圾回收效率平衡
- *    - 内存占用最小化
+ * 记录类型：
+ * 1. FILE/DELETE记录：[begtag][fncrc][ctim][filename\0{1,4}][endtag]
+ * 2. RENAME记录：[begtag][fncrc][fncrc2][filename1\0filename2\0{1,4}][endtag]
+ * 3. DATA记录：[begtag][data0][data1]...[dataN\0{0,3}][endtag]
  */
 
 /*
@@ -113,7 +53,6 @@
 #include <stdio.h>
 #include <fcntl.h>
 
-
 #if defined(CFG_linux) || defined(CFG_flashsim)
 #include <sys/stat.h>
 #include <errno.h>
@@ -126,124 +65,188 @@
 #include "uj.h"
 #include "fs.h"
 
-// Flash is organized in 32bit words
-// Whole/part is split up into two sections.
-// If one section is full, a GC collection copies over
-// only live data to the other section.
-// A section consists of an magic + GC seq counter
-// Each GC increments the sequence counter.
-// Given two section magics is is clear which one is older.
-//
-// After the section magic follow records:
-//
-// [begtag] ... [endtag]
-//
-// They can be travered forward and backward.
-// begtag/endtag both contain a length.
-// begtag carries an ino number.
-// ino numbers are increasing and are reset/relabeled during GC.
-// endtag has a CRC.
-//
-// [begtag] [fncrc] [ctim]   [filename                 '\0'{1,4}] [endtag]   FILE/DELETE
-// [begtag] [fncrc] [fncrc2] [filename1 '\0' filename2 '\0'{1,4}] [endtag]   RENAME
-// [begtag] [data0] [data1] ... [dataN '\0'{0,3}]                 [endtag]   DATA
-//
-// For DATA records the number pad bytes is indicated in endtag.
-// pad(begtag) is always 0 for all records.
-// pad(endtag) is zero for FILE/DELETE/RENAME.
-//
-// End of GC is marked with a FILE record and a filename word 002f2f00 and
-// fncrc=0 ctime=0.
-//
-
-
-
-// Make our file handles different from system ones (just safety)
+// 文件描述符偏移量，用于区分系统文件描述符
 #define OFF_FD 0x10000
+// 最大inode号
 #define MAX_INO 0x3FFF
+// CRC初始值
 #define CRC_INI 0x1234
 
+// 闪存魔数，用于标识文件系统分区
 #define FLASH_MAGIC 0xA4B5
+// 分区A的起始地址
 #define FLASH_BEG_A (FLASH_ADDR  + FLASH_PAGE_SIZE * FS_PAGE_START)
+// 分区B的起始地址
 #define FLASH_BEG_B (FLASH_BEG_A + FLASH_PAGE_SIZE * (FS_PAGE_CNT/2))
+// 分区A的结束地址
 #define FLASH_END_A (FLASH_BEG_B)
+// 分区B的结束地址
 #define FLASH_END_B (FLASH_BEG_B + FLASH_PAGE_SIZE * (FS_PAGE_CNT/2))
 
+/**
+ * @brief 从标签中提取命令
+ * @param v 标签值
+ * @return 命令值(0-3)
+ */
 static inline u1_t FSTAG_cmd(u4_t v) { return  (v >> 30) & 3; }
+
+/**
+ * @brief 从标签中提取inode号
+ * @param v 标签值
+ * @return inode号
+ */
 static inline u2_t FSTAG_ino(u4_t v) { return ((v >> 16) & MAX_INO); }
+
+/**
+ * @brief 从标签中提取CRC值
+ * @param v 标签值
+ * @return CRC值
+ */
 static inline u2_t FSTAG_crc(u4_t v) { return ((v >> 16) & 0xFFFF); }
+
+/**
+ * @brief 从标签中提取长度
+ * @param v 标签值
+ * @return 长度值
+ */
 static inline u2_t FSTAG_len(u4_t v) { return   v & 0xFFFC; }
+
+/**
+ * @brief 从标签中提取填充值
+ * @param v 标签值
+ * @return 填充值(0-3)
+ */
 static inline u1_t FSTAG_pad(u4_t v) { return   v & 3; }
 
+/**
+ * @brief 创建开始标签
+ * @param cmd 命令值
+ * @param ino inode号
+ * @param len 长度
+ * @param pad 填充值
+ * @return 标签值
+ */
 static inline u4_t FSTAG_mkBeg(u1_t cmd, u2_t ino, u2_t len, u1_t pad) {
     return (cmd<<30) | ((ino&MAX_INO)<<16) | (len&0xFFFC) | (pad&3);
 }
 
+/**
+ * @brief 创建结束标签
+ * @param crc CRC值
+ * @param len 长度
+ * @param pad 填充值
+ * @return 标签值
+ */
 static inline u4_t FSTAG_mkEnd(u2_t crc, u2_t len, u1_t pad) {
     return ((crc&0xFFFF)<<16) | (len&0xFFFC)|(pad&3);
 }
 
-#define FSCMD_FILE   0
-#define FSCMD_DATA   1
-#define FSCMD_RENAME 2
-#define FSCMD_DELETE 3
+// 命令定义
+#define FSCMD_FILE   0  ///< 文件命令
+#define FSCMD_DATA   1  ///< 数据命令
+#define FSCMD_RENAME 2  ///< 重命名命令
+#define FSCMD_DELETE 3  ///< 删除命令
 
+/**
+ * @brief 文件上下文结构体
+ * 
+ * 用于跟踪文件操作的位置和状态
+ */
 typedef struct fctx {
-    u4_t faddr;
-    u4_t begtag;
-    u4_t endtag;
+    u4_t faddr;   ///< 闪存地址
+    u4_t begtag;  ///< 开始标签
+    u4_t endtag;  ///< 结束标签
 } fctx_t;
 
+/**
+ * @brief 文件句柄结构体
+ * 
+ * 用于管理打开的文件
+ */
 typedef struct fh {
-    u2_t ino;
-    u2_t droff;   // offset inside data record
-    u4_t faddr;
-    u4_t foff;    // file read offset
+    u2_t ino;     ///< inode号
+    u2_t droff;   ///< 数据记录内的偏移
+    u4_t faddr;   ///< 闪存地址
+    u4_t foff;    ///< 文件读取偏移
 } fh_t;
 
-
+/**
+ * @brief inode缓存结构体
+ * 
+ * 用于缓存文件元数据
+ */
 struct ino_cache {
-    u4_t faddrFile;   // creating FILE record
-    u4_t faddrRename; // last rename
-    u4_t fncrc;
+    u4_t faddrFile;   ///< 创建文件的记录地址
+    u4_t faddrRename; ///< 最后一次重命名的地址
+    u4_t fncrc;       ///< 文件名CRC
 };
 
-
+// 辅助缓冲区大小定义
 #define AUXBUF_SZW (2*((FS_MAX_FNSIZE+3)/4))
 #define AUXBUF_SZ4 (4*AUXBUF_SZW)
 
+/**
+ * @brief 辅助缓冲区联合体
+ * 
+ * 用于临时存储和操作数据
+ */
 static union auxbuf {
-    u4_t u4[AUXBUF_SZW];
-    u1_t u1[AUXBUF_SZ4];
+    u4_t u4[AUXBUF_SZW];  ///< 32位字数组
+    u1_t u1[AUXBUF_SZ4];  ///< 8位字节数组
 } auxbuf;
 
+// 全局变量
+static fctx_t fctxCache;  ///< 文件上下文缓存
+static u4_t   flashKey[4];  ///< 闪存加密密钥
+static u4_t   flashWP;  ///< 闪存写入指针
+static u2_t   nextIno;  ///< 下一个可用的inode号
+static s1_t   fsSection = -1;  ///< 当前活动分区(0或1)
+static const char DEFAULT_CWD[] = "/s2/";  ///< 默认工作目录
+static str_t  cwd = DEFAULT_CWD;  ///< 当前工作目录
+static fh_t   fhTable[FS_MAX_FD];  ///< 文件句柄表
 
-
-static fctx_t fctxCache;
-static u4_t   flashKey[4];
-static u4_t   flashWP;
-static u2_t   nextIno;
-static s1_t   fsSection = -1;   // 0|1, -1 no fs_ini called yet
-static const char DEFAULT_CWD[] = "/s2/";
-static str_t  cwd = DEFAULT_CWD;
-static fh_t   fhTable[FS_MAX_FD];
-
+/**
+ * @brief 获取当前活动分区的起始地址
+ * @return 分区起始地址
+ */
 static inline u4_t flashFsBeg() {
     return fsSection ? FLASH_BEG_B+4 : FLASH_BEG_A+4;
 }
 
+/**
+ * @brief 获取当前活动分区的最大地址
+ * @return 分区最大地址
+ */
 static inline u4_t flashFsMax() {
     return fsSection ? FLASH_END_B : FLASH_END_A;
 }
 
+/**
+ * @brief 加密单个32位字
+ * @param faddr 闪存地址
+ * @param data 要加密的数据
+ * @return 加密后的数据
+ */
 static u4_t encrypt1 (u4_t faddr, u4_t data) {
     return data ^ flashKey[(faddr>>2) & 3];
 }
 
+/**
+ * @brief 解密单个32位字
+ * @param faddr 闪存地址
+ * @param data 要解密的数据
+ * @return 解密后的数据
+ */
 static u4_t decrypt1 (u4_t faddr, u4_t data) {
     return encrypt1(faddr, data);
 }
 
+/**
+ * @brief 加密多个32位字
+ * @param faddr 闪存地址
+ * @param data 要加密的数据数组
+ * @param u4cnt 数据字数
+ */
 static void encryptN (u4_t faddr, u4_t* data, uint u4cnt) {
     for( uint u=0; u<u4cnt; u++ ) {
         data[u] = encrypt1(faddr+u*4, data[u]);
@@ -314,6 +317,13 @@ static u4_t fctx_endtag (fctx_t* fctx) {
     return endtag;
 }
 
+/**
+ * @brief 计算数据的CRC值
+ * @param crc 初始CRC值
+ * @param data 数据指针
+ * @param len 数据长度
+ * @return 计算后的CRC值
+ */
 static u2_t dataCrc (u2_t crc, const u1_t* data, uint len) {
     u1_t a=crc>>8, b=crc&0xFF;
     for( int i=0; i<len; i++ ) {
@@ -326,6 +336,11 @@ static u2_t dataCrc (u2_t crc, const u1_t* data, uint len) {
     return (a<<8)|b;
 }
 
+/**
+ * @brief 计算文件名的CRC值
+ * @param fn 文件名指针
+ * @return 计算后的CRC值
+ */
 static u4_t fnCrc (const char* fn) {
     u4_t crc = 0;
     while( *fn++ )
@@ -333,12 +348,17 @@ static u4_t fnCrc (const char* fn) {
     return UJ_FINISH_CRC(crc);
 }
 
+/**
+ * @brief 检查闪存是否已满
+ * @param reqbytes 请求的字节数
+ * @return 0表示有足够空间，-1表示空间不足
+ */
 static int isFlashFull (u4_t reqbytes) {
     int emergency = 0;
     reqbytes = (reqbytes + 3) & ~3;
     while( flashWP + reqbytes > flashFsMax() || nextIno >= MAX_INO-2 ) {
         if( emergency == 2 ) {
-            // No space even after an emergency clean up
+            // 即使在紧急清理后也没有空间
             errno = ENOSPC;
             return -1;
         }
@@ -348,7 +368,13 @@ static int isFlashFull (u4_t reqbytes) {
     return 0;
 }
 
-// Return len filename + zero byte
+/**
+ * @brief 规范化文件路径
+ * @param fn 原始文件路径
+ * @param wb 输出缓冲区
+ * @param maxsz 缓冲区最大大小
+ * @return 规范化后的路径长度，0表示错误
+ */
 int fs_fnNormalize (const char* fn, char* wb, int maxsz) {
     int ri = 0, wi = 0;
     wb[0] = 0;
@@ -369,20 +395,20 @@ int fs_fnNormalize (const char* fn, char* wb, int maxsz) {
     }
     int c;
     while( 1 ) {
-        // Start of path syllable - previous char is /
+        // 路径音节开始 - 前一个字符是/
         c = fn[ri];
         if( c=='/' ) {
-            ri++;                 // ignore double slash
+            ri++;                 // 忽略双斜杠
             continue;
         }
         if( c=='.' && (fn[ri+1] == '/' || fn[ri+1] == 0) ) {
-            ri += 2 - !fn[ri+1];  // ignore ./ or .\0
+            ri += 2 - !fn[ri+1];  // 忽略./或.\0
             continue;
         }
         if( c=='.' && fn[ri+1] == '.' && (fn[ri+2] == '/' || fn[ri+2] == 0) ) {
-            ri += 3 - !fn[ri+2];  // skip ../ and move back one syllable
+            ri += 3 - !fn[ri+2];  // 跳过../并回退一个音节
             if( wi == 1 )
-                continue;  // root slash
+                continue;  // 根斜杠
             do {
                 wi -= 1;
             } while( wb[wi-1] != '/');
@@ -390,7 +416,7 @@ int fs_fnNormalize (const char* fn, char* wb, int maxsz) {
         }
         if( c == 0 ) {
             if( wi > 1 )
-                wi -= 1;  // remove trailing /
+                wi -= 1;  // 移除尾部/
             wb[wi] = 0;
             return wi+1;
         }
@@ -413,13 +439,21 @@ int fs_fnNormalize (const char* fn, char* wb, int maxsz) {
     }
 }
 
-
+/**
+ * @brief 设置文件上下文到指定地址
+ * @param fctx 文件上下文指针
+ * @param faddr 闪存地址
+ */
 static void fctx_setTo (fctx_t* fctx, u4_t faddr) {
     memset(fctx, 0, sizeof(*fctx));
     fctx->faddr = faddr;
 }
 
-
+/**
+ * @brief 检查文件名有效性
+ * @param fn 文件名指针
+ * @return 文件名长度，0表示错误
+ */
 static int checkFilename (const char* fn) {
     if( fn == NULL ) {
         errno = EFAULT;
@@ -429,14 +463,19 @@ static int checkFilename (const char* fn) {
     int fnlen = auxbuf.u4[0] = fs_fnNormalize(fn, wb, FS_MAX_FNSIZE);
 #if defined(CFG_linux)
     if( strncmp(wb, "/s2/", 3) != 0 || (wb[3] != 0 && wb[3] != '/') ) {
-        // branch out into linux FS
+        // 分支到linux文件系统
         return -1;
     }
 #endif // defined(CFG_linux)
     return fnlen;
 }
 
-
+/**
+ * @brief 查找文件
+ * @param fctx 文件上下文指针
+ * @param fn 文件名
+ * @return 0表示成功，-1表示失败
+ */
 static int fs_findFile (fctx_t* fctx, const char* fn) {
     int fnlen;
     if( fn != NULL ) {
@@ -444,12 +483,12 @@ static int fs_findFile (fctx_t* fctx, const char* fn) {
         if( fnlen == 0 )
             return -1;
     } else {
-        // Caller already did checkFilename!
+        // 调用者已经执行了checkFilename
         fnlen = auxbuf.u4[0];
     }
     char* wb = (char*)&auxbuf.u1[12];
     u4_t seekcrc = auxbuf.u4[1] = fnCrc(wb);
-    u4_t faddr = flashWP;  // end of last record
+    u4_t faddr = flashWP;  // 最后一条记录的末尾
     while( faddr > flashFsBeg() ) {
         u4_t endtag = rdFlash1(faddr-4);
         u4_t len = FSTAG_len(endtag);
@@ -475,11 +514,19 @@ static int fs_findFile (fctx_t* fctx, const char* fn) {
     return -1;
 }
 
+/**
+ * @brief 处理文件操作
+ * @param fn 文件名
+ * @param fn2 第二个文件名（用于重命名）
+ * @param cmd 命令类型
+ * @param ino inode号
+ * @return 0表示成功，-1表示失败
+ */
 static int fs_handleFile (const char* fn, const char* fn2, u1_t cmd, u2_t ino) {
     char* wb = (char*)&auxbuf.u1[12];
     int fnlen;
     if( fn == NULL ) {
-        // Some previous operation already put normalized filename into auxbuf
+        // 之前的操作已经将规范化的文件名放入auxbuf
         fnlen = auxbuf.u4[0];
     } else {
         fnlen = fs_fnNormalize(fn, wb, FS_MAX_FNSIZE);
@@ -506,6 +553,12 @@ static int fs_handleFile (const char* fn, const char* fn2, u1_t cmd, u2_t ino) {
     return 0;
 }
 
+/**
+ * @brief 创建文件
+ * @param fh 文件句柄指针
+ * @param fn 文件名
+ * @return 0表示成功，-1表示失败
+ */
 static int fs_createFile (fh_t* fh, const char* fn) {
     u4_t faddr = flashWP;
     if( fs_handleFile(fn, NULL, FSCMD_FILE, nextIno++) == -1 )
@@ -513,12 +566,16 @@ static int fs_createFile (fh_t* fh, const char* fn) {
     u4_t begtag = auxbuf.u4[0];
     fh->faddr = faddr;
     fh->ino   = FSTAG_ino(begtag);
-    fh->droff = FSTAG_len(begtag);  // full - read moves on to next
+    fh->droff = FSTAG_len(begtag);  // 完整 - 读取移动到下一个
     fh->foff  = 0;
     return 0;
 }
 
-
+/**
+ * @brief 将文件描述符转换为文件句柄
+ * @param fd 文件描述符
+ * @return 文件句柄指针，NULL表示错误
+ */
 static fh_t* fd2fh (int fd) {
     if( fd < OFF_FD || fd >= OFF_FD+FS_MAX_FD ) {
         errno = EINVAL;
@@ -531,7 +588,12 @@ static fh_t* fd2fh (int fd) {
     return &fhTable[fd-OFF_FD];
 }
 
-
+/**
+ * @brief 查找下一个数据记录
+ * @param fctx 文件上下文指针
+ * @param ino inode号
+ * @return 1表示找到，0表示未找到
+ */
 static int fs_findNextDataRecord (fctx_t* fctx, u2_t ino) {
     u4_t faddr = fctx->faddr;
     if( faddr >= flashWP )
@@ -552,6 +614,13 @@ static int fs_findNextDataRecord (fctx_t* fctx, u2_t ino) {
     return 1;
 }
 
+/**
+ * @brief 读取文件内容
+ * @param fd 文件描述符
+ * @param dp 数据缓冲区
+ * @param dlen 要读取的长度
+ * @return 实际读取的字节数，-1表示错误
+ */
 int fs_read (int fd, void* dp, int dlen) {
     u1_t* data = (u1_t*)dp;
     fh_t* fh = fd2fh(fd);
@@ -612,7 +681,13 @@ int fs_read (int fd, void* dp, int dlen) {
     return rlen;
 }
 
-
+/**
+ * @brief 写入文件内容
+ * @param fd 文件描述符
+ * @param dp 数据缓冲区
+ * @param dlen 要写入的长度
+ * @return 实际写入的字节数，-1表示错误
+ */
 int fs_write (int fd, const void* dp, int dlen) {
     const u1_t* data = (const u1_t*)dp;
     fh_t* fh = fd2fh(fd);
@@ -636,7 +711,6 @@ int fs_write (int fd, const void* dp, int dlen) {
 
     auxbuf.u4[0] = 0;
     u2_t  dlenCeil = (dlen+3) & ~3;
-    //u2_t  dcrc = dataCrc(dataCrc(CRC_INI, data, dlen), auxbuf.u1, dlenCeil-dlen);
     u2_t  dcrc = dataCrc(CRC_INI, data, dlen);
     int   doff = 0;
     u1_t  tbeg=0, tend=0;
@@ -650,7 +724,7 @@ int fs_write (int fd, const void* dp, int dlen) {
         doff += cpylen;
         int cpylen4 = (cpylen+3)/4;
         if( doff == dlen ) {
-            auxbuf.u4[0+cpylen4] = 0;  // proactively padding
+            auxbuf.u4[0+cpylen4] = 0;  // 主动填充
             auxbuf.u4[1+cpylen4] = FSTAG_mkEnd(dcrc, dlenCeil, dlenCeil-dlen);
             tend = 1;
         }
@@ -661,9 +735,13 @@ int fs_write (int fd, const void* dp, int dlen) {
     return dlen;
 }
 
-
+/**
+ * @brief 改变当前工作目录
+ * @param dir 目标目录路径
+ * @return 0表示成功，-1表示失败
+ */
 int fs_chdir (str_t dir) {
-    // Normalize dir
+    // 规范化目录路径
     str_t ndir = dir;
     if( dir != NULL ) {
         ndir = (str_t)auxbuf.u1;
@@ -683,7 +761,11 @@ int fs_chdir (str_t dir) {
     return 0;
 }
 
-
+/**
+ * @brief 删除文件
+ * @param fn 文件名
+ * @return 0表示成功，-1表示失败
+ */
 int fs_unlink (const char* fn) {
     int fnlen = checkFilename(fn);
 #if defined(CFG_linux)
@@ -698,7 +780,12 @@ int fs_unlink (const char* fn) {
     return fs_handleFile(NULL, NULL, FSCMD_DELETE, FSTAG_ino(fctx_begtag(&fctxCache)));
 }
 
-
+/**
+ * @brief 重命名文件
+ * @param from 原文件名
+ * @param to 新文件名
+ * @return 0表示成功，-1表示失败
+ */
 int fs_rename (const char* from, const char* to) {
     int fnlen2 = checkFilename(to);
     int fnlen = checkFilename(from);
@@ -720,7 +807,12 @@ int fs_rename (const char* from, const char* to) {
     return fs_handleFile(NULL, to, FSCMD_RENAME, FSTAG_ino(fctx_begtag(&fctxCache)));
 }
 
-
+/**
+ * @brief 检查文件访问权限
+ * @param fn 文件名
+ * @param mode 访问模式
+ * @return 0表示有权限，-1表示无权限
+ */
 int fs_access (str_t fn, int mode) {
     int fnlen = checkFilename(fn);
 #if defined(CFG_linux)
@@ -733,7 +825,13 @@ int fs_access (str_t fn, int mode) {
     return fs_findFile(&fctxCache, NULL);
 }
 
-
+/**
+ * @brief 打开文件
+ * @param fn 文件名
+ * @param mode 打开模式
+ * @param ... 可变参数（用于Linux系统）
+ * @return 文件描述符，-1表示错误
+ */
 int fs_open (str_t fn, int mode, ...) {
     int fnlen = checkFilename(fn);
 #if defined(CFG_linux)
@@ -766,24 +864,24 @@ int fs_open (str_t fn, int mode, ...) {
     if( mode == (O_CREAT|O_WRONLY|O_TRUNC) ) {
         if( fs_createFile(fh, NULL) == -1 )
             return -1;
-        fh->faddr = 0;  // WRONLY
-        fh->droff = 0;  // not used during write
-        fh->foff  = 0;  // not used during write
+        fh->faddr = 0;  // 只写模式
+        fh->droff = 0;  // 写入时不使用
+        fh->foff  = 0;  // 写入时不使用
     }
     else if( mode == (O_CREAT|O_APPEND|O_WRONLY) ) {
         fctx_t* fctx = &fctxCache;
         if( fs_findFile(fctx, NULL) == -1 ) {
             if( fs_createFile(fh, NULL) == -1 )
                 return -1;
-            fh->faddr = 0;  // WRONLY
-            fh->droff = 0;  // not used during write
-            fh->foff  = 0;  // not used during write
+            fh->faddr = 0;  // 只写模式
+            fh->droff = 0;  // 写入时不使用
+            fh->foff  = 0;  // 写入时不使用
         } else {
             u4_t begtag = fctx_begtag(fctx);
             fh->ino   = FSTAG_ino(begtag);
-            fh->droff = 0;  // not used during write
-            fh->foff  = 0;  // not used during write
-            fh->faddr = 0;  // WRONLY
+            fh->droff = 0;  // 写入时不使用
+            fh->foff  = 0;  // 写入时不使用
+            fh->faddr = 0;  // 只写模式
         }
     }
     else if( mode == O_RDONLY ) {
@@ -792,7 +890,7 @@ int fs_open (str_t fn, int mode, ...) {
             return -1;
         u4_t begtag = fctx_begtag(fctx);
         fh->ino   = FSTAG_ino(begtag);
-        fh->droff = FSTAG_len(begtag);  // full - read moves on to next
+        fh->droff = FSTAG_len(begtag);  // 完整 - 读取移动到下一个
         fh->foff  = 0;
         fh->faddr = fctx->faddr;
     }
@@ -803,7 +901,11 @@ int fs_open (str_t fn, int mode, ...) {
     return fh - fhTable + OFF_FD;
 }
 
-
+/**
+ * @brief 关闭文件
+ * @param fd 文件描述符
+ * @return 0表示成功，-1表示失败
+ */
 int fs_close(int fd) {
     fh_t* fh = fd2fh(fd);
     if( fh == NULL ) {
@@ -818,7 +920,12 @@ int fs_close(int fd) {
     return 0;
 }
 
-
+/**
+ * @brief 获取文件状态
+ * @param fn 文件名
+ * @param st 状态结构体指针
+ * @return 0表示成功，-1表示失败
+ */
 int fs_stat (str_t fn, struct stat* st) {
     int fnlen = checkFilename(fn);
 #if defined(CFG_linux)
@@ -845,18 +952,24 @@ int fs_stat (str_t fn, struct stat* st) {
     return 0;
 }
 
-
+/**
+ * @brief 移动文件指针
+ * @param fd 文件描述符
+ * @param offset 偏移量
+ * @param whence 起始位置
+ * @return 0表示成功，-1表示失败
+ */
 int fs_lseek (int fd, int offset, int whence) {
     fh_t* fh = fd2fh(fd);
     if( fh == NULL )
         return -1;
     if( fh->faddr == 0 ) {
-        // no seek on writable files - fs can do only append
+        // 可写文件不支持seek - 文件系统只支持追加
         errno = EINVAL;
         return -1;
     }
     if( whence != SEEK_SET || offset < 0 ) {
-        // not supported right now - because not used
+        // 目前不支持 - 因为未使用
         errno = EINVAL;
         return -1;
     }
@@ -880,14 +993,20 @@ int fs_lseek (int fd, int offset, int whence) {
     return 0;
 }
 
-
+/**
+ * @brief 同步文件系统缓存
+ */
 void fs_sync () {
 #if defined(CFG_linux)
     sync();
 #endif // defined(CFG_linux)
 }
 
-
+/**
+ * @brief 验证记录完整性
+ * @param fctx 文件上下文指针
+ * @return inode号，-1表示验证失败
+ */
 static int fs_validateRecord (fctx_t* fctx) {
     u4_t begtag = fctx_begtag(fctx);
     u2_t ino    = FSTAG_ino(begtag);
@@ -895,7 +1014,7 @@ static int fs_validateRecord (fctx_t* fctx) {
     u4_t pad    = FSTAG_pad(begtag);
     u4_t faddr  = fctx->faddr;
     if( faddr + 8 + len > flashFsMax() ||
-        // right we don't have anything that requires initial padding
+        // 目前没有任何需要初始填充的情况
         len == 0 || pad )
         return -1;
     u4_t endtag = fctx_endtag(fctx);
@@ -921,7 +1040,11 @@ static int fs_validateRecord (fctx_t* fctx) {
     return ino;
 }
 
-
+/**
+ * @brief 智能擦除闪存页
+ * @param pgaddr 页起始地址
+ * @param pagecnt 页数
+ */
 static void fs_smartErase (u4_t pgaddr, u4_t pagecnt) {
     while( pagecnt > 0 ) {
         u4_t off=0, len=AUXBUF_SZ4;
@@ -944,12 +1067,10 @@ static void fs_smartErase (u4_t pgaddr, u4_t pagecnt) {
     }
 }
 
-
-// return:
-//   0 - pristine flash
-//   1 - section recovered as is
-//   2 - GC was required
-//
+/**
+ * @brief 检查文件系统完整性
+ * @return 0-原始闪存，1-分区恢复，2-需要GC
+ */
 int fs_ck () {
     u4_t magic[2];
 
@@ -959,43 +1080,43 @@ int fs_ck () {
     magic[0] = rdFlash1(FLASH_BEG_A);
 
     if( (magic[0] >> 16) != FLASH_MAGIC && (magic[1] >> 16) != FLASH_MAGIC ) {
-        // Looks pristine - never seen any transactions
+        // 看起来是原始闪存 - 从未见过任何事务
         fs_smartErase(FLASH_BEG_A, FS_PAGE_CNT);
         fsSection = 0;
         flashWP = flashFsBeg()-4;
         wrFlash1wp(FLASH_MAGIC<<16);
         nextIno = 1;
-        LOG(MOD_SYS|INFO, "FSCK initializing pristine flash");
+        LOG(MOD_SYS|INFO, "FSCK 初始化原始闪存");
         return 0;
     }
     if( (magic[0] >> 16) == FLASH_MAGIC && (magic[1] >> 16) == FLASH_MAGIC ) {
-        // Both sections with magics - probably aborted GC
-        // Rerun GC on older section.
+        // 两个分区都有魔数 - 可能是中断的GC
+        // 在较旧的分区上重新运行GC
         int d = magic[0] - magic[1];
         if( d != 1 && d != -1 ) {
-            LOG(MOD_SYS|ERROR, "FSCK discovered strange magics: A=%08X B=%08X", magic[0], magic[1]);
+            LOG(MOD_SYS|ERROR, "FSCK 发现奇怪的魔数: A=%08X B=%08X", magic[0], magic[1]);
         }
         fsSection = d < 0 ? 0 : 1;
-        LOG(MOD_SYS|INFO, "FSCK found two section markers: %c%d -> %c",
+        LOG(MOD_SYS|INFO, "FSCK 找到两个分区标记: %c%d -> %c",
             fsSection+'A', magic[fsSection] & 0xFFFF, (1^fsSection)+'A');
     } else {
-        // Only one section has a magic marker - make it current.
+        // 只有一个分区有魔数标记 - 使其成为当前分区
         assert( ((magic[0] >> 16) == FLASH_MAGIC) == !((magic[1] >> 16) == FLASH_MAGIC) );
         fsSection = (magic[0] >> 16) == FLASH_MAGIC ? 0 : 1;
-        LOG(MOD_SYS|INFO, "FSCK found section marker %c%d",
+        LOG(MOD_SYS|INFO, "FSCK 找到分区标记 %c%d",
             fsSection+'A', magic[fsSection] & 0xFFFF);
     }
 
-    // Validate current section
+    // 验证当前分区
     uint rcnt=0, maxino=0; int ino;
     fctx_setTo(&fctxCache, flashFsBeg());
     while( (ino = fs_validateRecord(&fctxCache)) >= 0 ) {
         if( ino > maxino ) maxino = ino;
         rcnt++;
     }
-    nextIno = maxino+1;           // unlikely ino rollover! -> emergency gc
+    nextIno = maxino+1;           // 不太可能的inode回滚！-> 紧急gc
     flashWP = fctxCache.faddr;
-    LOG(MOD_SYS|INFO, "FSCK section %c: %d records, %d bytes used, %d bytes free",
+    LOG(MOD_SYS|INFO, "FSCK 分区 %c: %d 记录, %d 字节已用, %d 字节空闲",
         fsSection+'A', rcnt, flashWP - (flashFsBeg()-4), flashFsMax()-flashWP);
 
     u4_t fend = flashFsMax();
@@ -1008,22 +1129,25 @@ int fs_ck () {
         sys_readFlash(faddr, auxbuf.u4, lenw);
         for( int wi=0; wi<lenw; wi++ ) {
             if( auxbuf.u4[wi] != FLASH_ERASED ) {
-                LOG(MOD_SYS|INFO, "FSCK section %c followed by dirty flash - GC required.", fsSection+'A');
+                LOG(MOD_SYS|INFO, "FSCK 分区 %c 后面有脏闪存 - 需要GC", fsSection+'A');
                 fs_gc(0);
                 return 2;
             }
         }
         faddr += len;
     }
-    // We found a set of sane records followed by
-    // erased flash until section end.
-    // Do a smart erase of the other section
+    // 我们发现了一组正常的记录，后面是
+    // 直到分区结束的已擦除闪存
+    // 智能擦除另一个分区
     fs_smartErase(fsSection ? FLASH_BEG_A : FLASH_BEG_B, FS_PAGE_CNT/2);
-    LOG(MOD_SYS|INFO, "FSCK section %c followed by erased flash - all clear.", fsSection+'A');
+    LOG(MOD_SYS|INFO, "FSCK 分区 %c 后面是已擦除闪存 - 全部清除", fsSection+'A');
     return 1;
 }
 
-
+/**
+ * @brief 获取文件系统信息
+ * @param infop 信息结构体指针
+ */
 void fs_info(fsinfo_t* infop) {
     infop->fbasep   = sys_ptrFlash();
     infop->fbase    = FLASH_BEG_A;
@@ -1043,7 +1167,10 @@ void fs_info(fsinfo_t* infop) {
     memcpy(infop->key, flashKey, sizeof(infop->key));
 }
 
-
+/**
+ * @brief 执行垃圾回收
+ * @param emergency 是否紧急GC
+ */
 void fs_gc (int emergency) {
     // Invalidate all open files
     // If any one of them survises GC it'll be reinstated
@@ -1202,29 +1329,36 @@ void fs_gc (int emergency) {
     }
 }
 
-
+/**
+ * @brief 擦除整个文件系统
+ */
 void fs_erase () {
     sys_iniFlash ();
-    // sys_eraseFlash(FLASH_BEG_A, FS_PAGE_CNT);
     fs_smartErase (FLASH_BEG_A, FS_PAGE_CNT);
-    fsSection = -1;  // unlock fs_ini
+    fsSection = -1;  // 解锁fs_ini
 }
 
+/**
+ * @brief 初始化文件系统
+ * @param key 加密密钥
+ * @return 0-原始闪存，1-分区恢复，2-需要GC
+ */
 int fs_ini (u4_t key[4]) {
     if( fsSection != -1 )
         return -1;
     sys_iniFlash();
     if( key ) {
         memcpy(flashKey, key, sizeof(flashKey));
-        // LOG(MOD_SYS|INFO, "FS_KEY = %08X-%08X-%08X-%08X", key[0], key[1], key[2], key[3])
     }
     return fs_ck();
 }
 
-
+// 命令名称数组
 static const char* const CMD_NAMES[] = {
     "FILE", "DATA", "RENAME", "DELETE"
 };
+
+// 格式化字符串定义
 #define FSDMP_ADDR_FMT "[%08X] "
 #define FSDMP_PFX_FMT FSDMP_ADDR_FMT "%-6s ino=%-5d "
 #define FSDMP_DFLT_FMT FSDMP_PFX_FMT "[%08X] %10d %s"
@@ -1368,6 +1502,11 @@ int fs_dump (void (*_LOG)(u1_t mod_level, const char* fmt, ...)) {
 
 
 #if defined(CFG_linux) || defined(CFG_flashsim)
+/**
+ * @brief 文件系统命令行接口
+ * @param cmdline 命令行字符串
+ * @return 0表示成功，非0表示错误
+ */
 int fs_shell (char* cmdline) {
     char* argv[6];
     int argc=0, c;
@@ -1502,6 +1641,11 @@ int fs_shell (char* cmdline) {
 
 #else // defined(CFG_linux)
 
+/**
+ * @brief 空实现（非Linux平台）
+ * @param cmdline 命令行字符串
+ * @return 0
+ */
 int fs_shell (char* cmdline) {
     return 0;
 }
