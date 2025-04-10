@@ -24,15 +24,11 @@ TEST_SRC = klee_rt_test.c
 SRC_FILES = ../../../src/rt.c \
             ../../../src/sys.c \
             ../../../src/log.c \
-            ../../../src/xprintf.c \
-            ../../../src/uj.c \
-            ../../../src/ujdec.c \
-            ../../../src/ujenc.c \
-            ../../../src/kwcrc.c \
             ../../../src/s2conf.c \
             ../../../src/flashsim.c
 
-LINUX_SRC_FILES = ../../../src-linux/sys_linux.c
+LINUX_SRC_FILES = ../../../src-linux/sys_linux.c \
+                  ../../../src-linux/sys_log.c
 
 # 目标文件
 TEST_OBJ = $(TEST_SRC:.c=.bc)
