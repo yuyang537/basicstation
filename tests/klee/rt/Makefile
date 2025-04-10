@@ -9,6 +9,7 @@ KLEE = klee
 # 编译选项
 CFLAGS = -emit-llvm -c -g -O0 \
          -I../../../src \
+         -I../../../src-linux \
          -I../../../deps/mbedtls/git-repo/include \
          -D_GNU_SOURCE \
          -D_POSIX_C_SOURCE=200809L \
@@ -19,31 +20,33 @@ CFLAGS = -emit-llvm -c -g -O0 \
          -DCFG_bdate=\"$(shell date +%Y-%m-%d)\"
 
 # 源文件
-TEST_SRC = klee_fs_test.c
-SRC_FILES = ../../../src/fs.c \
-            ../../../src/rt.c \
+TEST_SRC = klee_rt_test.c
+SRC_FILES = ../../../src/rt.c \
             ../../../src/sys.c \
             ../../../src/log.c \
+            ../../../src/xprintf.c \
             ../../../src/uj.c \
-            ../../../src/flashsim.c \
-			../../../src-linux/sys_linux.c \
-           ../../../src-linux/sys_log.c
+            ../../../src/ujdec.c \
+            ../../../src/ujenc.c \
+            ../../../src/kwcrc.c \
+            ../../../src/s2conf.c \
+            ../../../src/flashsim.c
 
-#LINUX_SRC_FILES = ../../../src-linux/sys_linux.c
+LINUX_SRC_FILES = ../../../src-linux/sys_linux.c
 
 # 目标文件
 TEST_OBJ = $(TEST_SRC:.c=.bc)
 SRC_OBJS = $(SRC_FILES:.c=.bc)
-#LINUX_SRC_OBJS = $(LINUX_SRC_FILES:.c=.bc)
+LINUX_SRC_OBJS = $(LINUX_SRC_FILES:.c=.bc)
 
 # 最终目标
-TARGET = fs_test.bc
+TARGET = rt_test.bc
 
 # 默认目标
 all: $(TARGET)
 
 # 链接目标文件
-$(TARGET): $(TEST_OBJ) $(SRC_OBJS) #$(LINUX_SRC_OBJS)
+$(TARGET): $(TEST_OBJ) $(SRC_OBJS) $(LINUX_SRC_OBJS)
 	$(LLVM_LINK) -o $@ $^
 
 # 编译测试源文件
@@ -55,6 +58,8 @@ $(TARGET): $(TEST_OBJ) $(SRC_OBJS) #$(LINUX_SRC_OBJS)
 	$(CC) $(CFLAGS) -o $@ $<
 
 # 编译Linux特定源文件
+../../../src-linux/%.bc: ../../../src-linux/%.c
+	$(CC) $(CFLAGS) -o $@ $<
 
 # 运行KLEE测试
 test: $(TARGET)
@@ -99,8 +104,8 @@ clean:
 
 # 帮助信息
 help:
-	@echo "KLEE文件系统测试Makefile"
-	@echo "========================="
+	@echo "KLEE运行时测试Makefile"
+	@echo "======================="
 	@echo "可用目标:"
 	@echo "  all     - 编译所有源文件"
 	@echo "  test    - 运行KLEE符号执行测试"
