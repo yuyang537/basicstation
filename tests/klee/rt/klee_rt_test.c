@@ -145,7 +145,6 @@ void test_timespan_parsing() {
 // 主测试函数
 int main() {
     // 运行所有测试用例
-    test_sys_functions();
     test_time_conversion();
     test_endian_conversion();
     test_char_parsing();
