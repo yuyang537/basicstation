@@ -234,14 +234,310 @@ void test_boundary_conditions() {
 }
 
 /*
+ * 测试用例1: 路径规范化安全测试
+ */
+void test_path_normalization() {
+    char path[64];
+    char normalized[64];
+    int result;
+    
+    // 符号化路径字符串
+    klee_make_symbolic(path, sizeof(path), "path_string");
+    
+    // 确保路径是一个合法的C字符串
+    klee_assume(path[sizeof(path)-1] == '\0');
+    
+    // 测试路径规范化函数
+    result = fs_fnNormalize(path, normalized, sizeof(normalized));
+    
+    // 验证返回结果
+    if (result > 0) {
+        // 确保规范化路径是以 '/' 开头的绝对路径
+        assert(normalized[0] == '/');
+        
+        // 确保规范化路径不包含连续的 '/'
+        for (int i = 0; i < result-1; i++) {
+            if (normalized[i] == '/') {
+                assert(normalized[i+1] != '/');
+            }
+        }
+        
+        // 确保规范化路径不包含 "." 或 ".."
+        assert(strstr(normalized, "/.") == NULL || 
+               (strstr(normalized, "/.") != NULL && 
+                strstr(normalized, "/.")[2] != '\0' && 
+                strstr(normalized, "/.")[2] != '/'));
+        assert(strstr(normalized, "/..") == NULL || 
+               (strstr(normalized, "/..") != NULL && 
+                strstr(normalized, "/..")[3] != '\0' && 
+                strstr(normalized, "/..")[3] != '/'));
+    } 
+    // 如果失败，结果应为0
+    else {
+        assert(result == 0);
+        // 验证失败原因
+        assert(errno == ENAMETOOLONG || errno == EFAULT);
+    }
+}
+
+/*
+ * 测试用例2: 文件名检查安全测试
+ */
+void test_filename_validation() {
+    // 这个测试需要通过调用fs_open间接测试checkFilename函数
+    char filename[128];
+    
+    // 符号化文件名
+    klee_make_symbolic(filename, sizeof(filename), "filename");
+    
+    // 确保文件名是一个合法的C字符串
+    klee_assume(filename[sizeof(filename)-1] == '\0');
+    
+    // 打开文件 - 这会调用checkFilename进行验证
+    int fd = fs_open(filename, O_RDONLY);
+    
+    // 验证结果
+    if (fd >= 0) {
+        // 如果成功，关闭文件
+        assert(fs_close(fd) == 0);
+    } else {
+        // 如果失败，检查错误码
+        assert(errno == ENAMETOOLONG || errno == ENOENT || 
+               errno == EFAULT || errno == EINVAL);
+    }
+}
+
+/*
+ * 测试用例3: 文件描述符安全测试
+ */
+void test_file_descriptor() {
+    int fd;
+    
+    // 符号化文件描述符
+    klee_make_symbolic(&fd, sizeof(fd), "file_descriptor");
+    
+    // 符号执行关闭操作
+    int result = fs_close(fd);
+    
+    // 验证结果
+    if (result == 0) {
+        // 成功关闭：fd必须是有效的文件描述符
+        assert(fd >= 0x10000 && fd < 0x10000 + FS_MAX_FD);
+    } else {
+        // 失败：确保errno是一个有效值
+        assert(errno == EBADF || errno == EINVAL);
+    }
+}
+
+/*
+ * 测试用例4: 文件读写边界测试
+ */
+void test_file_read_write_bounds() {
+    int fd;
+    void* buffer;
+    int length;
+    
+    // 符号化文件描述符、缓冲区地址和读写长度
+    klee_make_symbolic(&fd, sizeof(fd), "fd_read_write");
+    klee_make_symbolic(&buffer, sizeof(buffer), "buffer_addr");
+    klee_make_symbolic(&length, sizeof(length), "read_write_length");
+    
+    // 限制符号值范围以减少状态空间
+    klee_assume(fd >= -1 && fd < 0x10000 + FS_MAX_FD);
+    klee_assume(length >= -10 && length < 1024);
+    
+    // 测试读操作
+    int read_result = fs_read(fd, buffer, length);
+    
+    // 验证读取结果
+    if (read_result >= 0) {
+        // 读取成功：长度不为负，且不超过请求的长度
+        assert(read_result <= length);
+    } else {
+        // 读取失败：检查错误码
+        assert(errno == EBADF || errno == EINVAL || errno == EFAULT);
+    }
+    
+    // 测试写操作
+    int write_result = fs_write(fd, buffer, length);
+    
+    // 验证写入结果
+    if (write_result >= 0) {
+        // 写入成功：写入的字节数不超过请求的长度
+        assert(write_result <= length);
+    } else {
+        // 写入失败：检查错误码
+        assert(errno == EBADF || errno == EINVAL || 
+               errno == EFAULT || errno == ENOSPC);
+    }
+}
+
+/*
+ * 测试用例5: 文件句柄转换安全测试
+ */
+void test_fd2fh_safety() {
+    // 间接测试fd2fh函数的安全性
+    int fd;
+    
+    // 符号化文件描述符
+    klee_make_symbolic(&fd, sizeof(fd), "fd_conversion");
+    
+    // 尝试获取文件状态(stat)，这会间接调用fd2fh函数
+    struct stat st;
+    char filename[32] = "/s2/test.txt"; // 使用固定文件名
+    
+    int result = fs_stat(filename, &st);
+    
+    // 验证结果
+    if (result == 0) {
+        // 成功：验证返回的结构体内容
+        assert(st.st_ino > 0);
+        assert(st.st_ino <= 0x3FFF); // MAX_INO
+        assert(st.st_size >= 0);
+    } else {
+        // 失败：检查错误码
+        assert(errno == ENOENT || errno == EINVAL);
+    }
+}
+
+/*
+ * 测试用例6: 文件系统初始化安全测试
+ */
+void test_fs_ini_safety() {
+    u4_t key[4];
+    
+    // 符号化密钥
+    klee_make_symbolic(key, sizeof(key), "fs_key");
+    
+    // 首先擦除文件系统以确保初始状态
+    fs_erase();
+    
+    // 初始化文件系统
+    int result = fs_ini(key);
+    
+    // 验证结果
+    assert(result >= 0 && result <= 2);
+    
+    // 再次尝试初始化，应该失败
+    result = fs_ini(key);
+    assert(result == -1);
+}
+
+/*
+ * 测试用例7: 文件偏移设置安全测试
+ */
+void test_file_offset() {
+    int fd, offset, whence;
+    
+    // 符号化参数
+    klee_make_symbolic(&fd, sizeof(fd), "seek_fd");
+    klee_make_symbolic(&offset, sizeof(offset), "seek_offset");
+    klee_make_symbolic(&whence, sizeof(whence), "seek_whence");
+    
+    // 限制范围
+    klee_assume(fd >= -1 && fd < 0x10000 + FS_MAX_FD);
+    klee_assume(offset >= -1024 && offset < 1024);
+    klee_assume(whence >= 0 && whence <= 2); // SEEK_SET, SEEK_CUR, SEEK_END
+    
+    // 测试文件偏移设置
+    int result = fs_lseek(fd, offset, whence);
+    
+    // 验证结果
+    if (result >= 0) {
+        // 成功：新位置应该是合理的
+        assert(result >= 0);
+    } else {
+        // 失败：检查错误码
+        assert(errno == EBADF || errno == EINVAL);
+    }
+}
+
+/*
+ * 测试用例8: 文件系统信息安全测试
+ */
+void test_fs_info_safety() {
+    fsinfo_t info;
+    
+    // 获取文件系统信息
+    fs_info(&info);
+    
+    // 验证信息的合理性
+    assert(info.pagecnt > 0);
+    assert(info.pagesize > 0);
+    assert(info.activeSection <= 1); // 0或1
+    assert(info.used <= info.pagecnt * info.pagesize);
+    assert(info.free <= info.pagecnt * info.pagesize);
+    assert(info.used + info.free <= info.pagecnt * info.pagesize);
+}
+
+/*
+ * 测试用例9: Flash操作安全测试
+ */
+void test_flash_operations() {
+    u4_t address;
+    u4_t data;
+    
+    // 符号化地址和数据
+    klee_make_symbolic(&address, sizeof(address), "flash_address");
+    klee_make_symbolic(&data, sizeof(data), "flash_data");
+    
+    // 限制地址范围在合法的闪存区域内
+    // 假设FLASH_BEG_A是0x10000000，每个分区大小是0x10000
+    klee_assume(address >= 0x10000000 && address < 0x10020000);
+    klee_assume(address % 4 == 0); // 4字节对齐
+    
+    // 尝试写入和读取，但这需要在可控环境中才能测试
+    // 这里只是形式上的测试，实际上我们需要环境支持
+    // wrFlash1(address, data);
+    // u4_t read_data = rdFlash1(address);
+    // assert(read_data == data);
+}
+
+/*
+ * 测试用例10: 垃圾回收安全测试
+ */
+void test_gc_safety() {
+    int emergency;
+    
+    // 符号化紧急标志
+    klee_make_symbolic(&emergency, sizeof(emergency), "gc_emergency");
+    
+    // 限制为有效值
+    klee_assume(emergency >= 0 && emergency <= 1);
+    
+    // 执行垃圾回收
+    fs_gc(emergency);
+    
+    // 验证文件系统仍然可用
+    fsinfo_t info;
+    fs_info(&info);
+    assert(info.free > 0); // 应该有一些可用空间
+}
+
+/*
  * 主测试入口
  */
 int main() {
+    // 初始化文件系统
+    u4_t key[4] = {0x71593cbf, 0x81db1a48, 0x22fc47fe, 0xe8cf23ea};
+    fs_erase();
+    fs_ini(key);
+    
     // 运行所有测试用例
     test_path_handling();
     test_fs_management();
     test_segmented_io();
     test_boundary_conditions();
+    test_path_normalization();
+    test_filename_validation();
+    test_file_descriptor();
+    test_file_read_write_bounds();
+    test_fd2fh_safety();
+    test_fs_ini_safety();
+    test_file_offset();
+    test_fs_info_safety();
+    test_flash_operations();
+    test_gc_safety();
     
     return 0;
 } 

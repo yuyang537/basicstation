@@ -44,7 +44,7 @@ void test_time_conversion() {
     assert(microseconds == seconds * 1000000);
     
     // 毫秒到微秒转换
-    uint32_t milliseconds;
+    int64_t milliseconds;
     klee_make_symbolic(&milliseconds, sizeof(milliseconds), "milliseconds");
     klee_assume(milliseconds < 1000000); // 防止溢出
     uint64_t ms_to_us = rt_millis(milliseconds);

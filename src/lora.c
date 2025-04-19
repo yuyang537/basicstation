@@ -106,26 +106,32 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "s2conf.h"
-#include "uj.h"
+#include "s2conf.h"  // 配置头文件
+#include "uj.h"      // JSON处理库
 
+// LoRaWAN消息头部(MHDR)字段定义
+#define MHDR_FTYPE  0xE0  // 帧类型掩码，占据高3位
+#define MHDR_RFU    0x1C  // 保留字段掩码，目前未使用
+#define MHDR_MAJOR  0x03  // 协议版本掩码，占据低2位
+#define MHDR_DNFLAG 0x20  // 下行帧标志位
 
-#define MHDR_FTYPE  0xE0
-#define MHDR_RFU    0x1C
-#define MHDR_MAJOR  0x03
-#define MHDR_DNFLAG 0x20
+// LoRaWAN协议版本定义
+#define MAJOR_V1    0x00  // LoRaWAN 1.0版本标识
 
-#define MAJOR_V1    0x00
+// LoRaWAN帧类型定义
+#define FRMTYPE_JREQ   0x00  // 加入请求帧
+#define FRMTYPE_JACC   0x20  // 加入接受帧
+#define FRMTYPE_DAUP   0x40  // 未确认数据上行帧
+#define FRMTYPE_DADN   0x60  // 未确认数据下行帧
+#define FRMTYPE_DCUP   0x80  // 确认数据上行帧
+#define FRMTYPE_DCDN   0xA0  // 确认数据下行帧
+#define FRMTYPE_REJOIN 0xC0  // 重新加入帧
+#define FRMTYPE_PROP   0xE0  // 专有帧(不符合标准规范)
 
-#define FRMTYPE_JREQ   0x00
-#define FRMTYPE_JACC   0x20
-#define FRMTYPE_DAUP   0x40  // data (unconfirmed) up
-#define FRMTYPE_DADN   0x60  // data (unconfirmed) dn
-#define FRMTYPE_DCUP   0x80  // data confirmed up
-#define FRMTYPE_DCDN   0xA0  // data confirmed dn
-#define FRMTYPE_REJOIN 0xC0  // rejoin
-#define FRMTYPE_PROP   0xE0  // propriatary
-#define FTYPE_BIT(t) (1<<(((t) & MHDR_FTYPE)>>5))
+// 帧类型位操作宏
+#define FTYPE_BIT(t) (1<<(((t) & MHDR_FTYPE)>>5))  // 将帧类型转换为对应位掩码
+
+// 下行帧类型位掩码
 #define DNFRAME_TYPE (FTYPE_BIT(FRMTYPE_JACC) | \
                       FTYPE_BIT(FRMTYPE_DADN) | \
                       FTYPE_BIT(FRMTYPE_DCDN) )
@@ -138,12 +144,14 @@
 // +=====+=========+========+==========+=====+
 // | mhdr| joineui | deveui | devnonce | MIC |
 // +-----+---------+--------+----------+-----+
-#define OFF_mhdr      0
-#define OFF_joineui   1
-#define OFF_deveui    9
-#define OFF_devnonce 17
-#define OFF_jreq_mic 19
-#define OFF_jreq_len 23
+
+// 加入请求帧字段偏移量定义
+#define OFF_mhdr      0   // 消息头部偏移量
+#define OFF_joineui   1   // Join EUI偏移量(8字节)
+#define OFF_deveui    9   // 设备EUI偏移量(8字节)
+#define OFF_devnonce 17   // 设备随机数偏移量(2字节)
+#define OFF_jreq_mic 19   // 消息完整性码偏移量(4字节)
+#define OFF_jreq_len 23   // 加入请求帧总长度
 
 // +------------------------------------------------------------+
 // |                           DATA FRAME                       |
@@ -152,15 +160,17 @@
 // +=====+=========+=====+=======+=======+======+=========+=====+
 // | mhdr| devaddr |fctrl|  fcnt | fopts | port | payload | MIC |
 // +-----+---------+-----+-------+-------+------+---------+-----+
-#define OFF_devaddr     1
-#define OFF_fctrl       5
-#define OFF_fcnt        6
-#define OFF_fopts       8
-#define OFF_df_minlen  12
 
+// 数据帧字段偏移量定义
+#define OFF_devaddr     1   // 设备地址偏移量(4字节)
+#define OFF_fctrl       5   // 帧控制字段偏移量(1字节)
+#define OFF_fcnt        6   // 帧计数器偏移量(2字节)
+#define OFF_fopts       8   // 帧选项偏移量
+#define OFF_df_minlen  12   // 数据帧最小长度(无选项和载荷时)
 
-uL_t* s2e_joineuiFilter;
-u4_t  s2e_netidFilter[4] = { 0xffFFffFF, 0xffFFffFF, 0xffFFffFF, 0xffFFffFF };
+// 全局过滤器配置
+uL_t* s2e_joineuiFilter;               // Join EUI过滤表，用于过滤不需要处理的加入请求
+u4_t  s2e_netidFilter[4] = { 0xffFFffFF, 0xffFFffFF, 0xffFFffFF, 0xffFFffFF };  // NetID过滤表
 
 
 /*
@@ -196,91 +206,126 @@ u4_t  s2e_netidFilter[4] = { 0xffFFffFF, 0xffFFffFF, 0xffFFffFF, 0xffFFffFF };
  *      - 返回处理状态
  */
 int s2e_parse_lora_frame(ujbuf_t* buf, const u1_t* frame, int len, dbuf_t* lbuf) {
-    if( len == 0 ) {
-    badframe:
-        LOG(MOD_S2E|DEBUG, "Not a LoRaWAN frame: %16.4H", len, frame);
-        return 0;
+    if( len == 0 ) {  // 检查帧长度是否为0
+    badframe:  // 错误处理标签
+        LOG(MOD_S2E|DEBUG, "Not a LoRaWAN frame: %16.4H", len, frame);  // 记录日志，指出无效帧
+        return 0;  // 返回失败
     }
-    int ftype = frame[OFF_mhdr] & MHDR_FTYPE;
+    
+    int ftype = frame[OFF_mhdr] & MHDR_FTYPE;  // 提取帧类型
+    
+    // 检查帧格式有效性：
+    // 1. 如果不是专有帧，帧长度必须大于等于最小数据帧长度
+    // 2. 帧必须使用LoRaWAN 1.0协议版本(保留字段为0，版本号为MAJOR_V1)
     if( (len < OFF_df_minlen && ftype != FRMTYPE_PROP) ||
         // (FTYPE_BIT(ftype) & DNFRAME_TYPE) != 0 || --- because of device_mode feature we parse everything
         (frame[OFF_mhdr] & (MHDR_RFU|MHDR_MAJOR)) != MAJOR_V1 ) {
-	goto badframe;
+        goto badframe;  // 格式无效，跳转到错误处理
     }
+    
+    // 处理专有帧或加入接受帧
     if( ftype == FRMTYPE_PROP || ftype == FRMTYPE_JACC ) {
-        str_t msgtype = ftype == FRMTYPE_PROP ? "propdf" : "jacc";
-        uj_encKVn(buf,
-                  "msgtype",   's', msgtype,
-                  "FRMPayload",'H', len, &frame[0],
-                  NULL);
-        xprintf(lbuf, "%s %16.16H", msgtype, len, &frame[0]);
-        return 1;
-    }
-    if( ftype == FRMTYPE_JREQ || ftype == FRMTYPE_REJOIN ) {
-        if( len != OFF_jreq_len)
-            goto badframe;
-        uL_t joineui = rt_rlsbf8(&frame[OFF_joineui]);
+        str_t msgtype = ftype == FRMTYPE_PROP ? "propdf" : "jacc";  // 确定消息类型字符串
         
-        if( s2e_joineuiFilter[0] != 0 ) {
+        // 编码JSON输出
+        uj_encKVn(buf,
+                  "msgtype",   's', msgtype,         // 消息类型
+                  "FRMPayload",'H', len, &frame[0],  // 原始帧内容(十六进制)
+                  NULL);
+                  
+        // 记录日志信息
+        xprintf(lbuf, "%s %16.16H", msgtype, len, &frame[0]);
+        return 1;  // 返回成功
+    }
+    
+    // 处理加入请求帧或重新加入帧
+    if( ftype == FRMTYPE_JREQ || ftype == FRMTYPE_REJOIN ) {
+        if( len != OFF_jreq_len)  // 检查帧长度是否符合加入请求帧格式
+            goto badframe;        // 长度不匹配，跳转到错误处理
+            
+        uL_t joineui = rt_rlsbf8(&frame[OFF_joineui]);  // 提取Join EUI (小端序)
+        
+        // 应用Join EUI过滤
+        if( s2e_joineuiFilter[0] != 0 ) {  // 如果启用了过滤器
             uL_t* f = s2e_joineuiFilter-2;
-            while( *(f += 2) ) {
-                if( joineui >= f[0] && joineui <= f[1] )
-                    goto out1;
+            while( *(f += 2) ) {  // 遍历过滤器表
+                if( joineui >= f[0] && joineui <= f[1] )  // 检查EUI是否在允许范围内
+                    goto out1;  // 在允许范围内，继续处理
             }
             
+            // EUI不在允许范围内，记录日志并返回失败
             xprintf(lbuf, "Join EUI %E filtered", joineui);
             return 0;
-          out1:;
+          out1:;  // 过滤通过标签
         }
-        str_t msgtype = (ftype == FRMTYPE_JREQ ? "jreq" : "rejoin");
-        u1_t  mhdr = frame[OFF_mhdr];
-        uL_t  deveui = rt_rlsbf8(&frame[OFF_deveui]);
-        u2_t  devnonce = rt_rlsbf2(&frame[OFF_devnonce]);
-        s4_t  mic = (s4_t)rt_rlsbf4(&frame[len-4]);
+        
+        str_t msgtype = (ftype == FRMTYPE_JREQ ? "jreq" : "rejoin");  // 确定消息类型字符串
+        u1_t  mhdr = frame[OFF_mhdr];                      // 提取消息头
+        uL_t  deveui = rt_rlsbf8(&frame[OFF_deveui]);      // 提取设备EUI
+        u2_t  devnonce = rt_rlsbf2(&frame[OFF_devnonce]);  // 提取设备随机数
+        s4_t  mic = (s4_t)rt_rlsbf4(&frame[len-4]);        // 提取消息完整性码
+        
+        // 编码JSON输出
         uj_encKVn(buf,
-                  "msgtype", 's', msgtype,
-                  "MHdr",    'i', mhdr,
-                  rt_joineui,'E', joineui,
-                  rt_deveui, 'E', deveui,
-                  "DevNonce",'i', devnonce,
-                  "MIC",     'i', mic,
+                  "msgtype", 's', msgtype,  // 消息类型
+                  "MHdr",    'i', mhdr,     // 消息头
+                  rt_joineui,'E', joineui,  // Join EUI
+                  rt_deveui, 'E', deveui,   // 设备EUI
+                  "DevNonce",'i', devnonce, // 设备随机数
+                  "MIC",     'i', mic,      // 消息完整性码
                   NULL);
+                  
+        // 记录日志信息
         xprintf(lbuf, "%s MHdr=%02X %s=%:E %s=%:E DevNonce=%d MIC=%d",
                 msgtype, mhdr, rt_joineui, joineui, rt_deveui, deveui, devnonce, mic);
-        return 1;
+        return 1;  // 返回成功
     }
-    u1_t foptslen = frame[OFF_fctrl] & 0xF;
-    u1_t portoff = foptslen + OFF_fopts;
-    if( portoff > len-4  )
-        goto badframe;
-    u4_t devaddr = rt_rlsbf4(&frame[OFF_devaddr]);
-    u1_t netid = devaddr >> (32-7);
-    if( ((1 << (netid & 0x1F)) & s2e_netidFilter[netid>>5]) == 0 ) {
+    
+    // 处理数据帧
+    u1_t foptslen = frame[OFF_fctrl] & 0xF;  // 提取帧选项长度(FCtrl的低4位)
+    u1_t portoff = foptslen + OFF_fopts;     // 计算端口字段偏移量
+    
+    if( portoff > len-4  )  // 检查帧长度是否足够包含所有字段
+        goto badframe;     // 长度不足，跳转到错误处理
         
+    u4_t devaddr = rt_rlsbf4(&frame[OFF_devaddr]);  // 提取设备地址
+    u1_t netid = devaddr >> (32-7);                 // 提取NetID(设备地址的高7位)
+    
+    // 应用NetID过滤
+    if( ((1 << (netid & 0x1F)) & s2e_netidFilter[netid>>5]) == 0 ) {
+        // NetID不在允许范围内，记录日志并返回失败
         xprintf(lbuf, "DevAddr=%X with NetID=%d filtered", devaddr, netid);
         return 0;
     }
-    u1_t  mhdr  = frame[OFF_mhdr];
-    u1_t  fctrl = frame[OFF_fctrl];
-    u2_t  fcnt  = rt_rlsbf2(&frame[OFF_fcnt]);
-    s4_t  mic   = (s4_t)rt_rlsbf4(&frame[len-4]);
-    str_t dir   = ftype==FRMTYPE_DAUP || ftype==FRMTYPE_DCUP ? "updf" : "dndf";
+    
+    // 提取数据帧字段
+    u1_t  mhdr  = frame[OFF_mhdr];     // 消息头
+    u1_t  fctrl = frame[OFF_fctrl];    // 帧控制字段
+    u2_t  fcnt  = rt_rlsbf2(&frame[OFF_fcnt]);  // 帧计数器
+    s4_t  mic   = (s4_t)rt_rlsbf4(&frame[len-4]);  // 消息完整性码
+    
+    // 确定数据帧方向
+    str_t dir   = ftype==FRMTYPE_DAUP || ftype==FRMTYPE_DCUP ? "updf" : "dndf";  
+    
+    // 编码JSON输出
     uj_encKVn(buf,
-              "msgtype",   's', dir,
-              "MHdr",      'i', mhdr,
-              "DevAddr",   'i', (s4_t)devaddr,
-              "FCtrl",     'i', fctrl,
-              "FCnt",      'i', fcnt,
-              "FOpts",     'H', foptslen, &frame[OFF_fopts],
-              "FPort",     'i', portoff == len-4 ? -1 : frame[portoff],
-              "FRMPayload",'H', max(0, len-5-portoff), &frame[portoff+1],
-              "MIC",       'i', mic,
+              "msgtype",   's', dir,                            // 消息类型
+              "MHdr",      'i', mhdr,                          // 消息头
+              "DevAddr",   'i', (s4_t)devaddr,                 // 设备地址
+              "FCtrl",     'i', fctrl,                         // 帧控制字段
+              "FCnt",      'i', fcnt,                          // 帧计数器
+              "FOpts",     'H', foptslen, &frame[OFF_fopts],   // 帧选项
+              "FPort",     'i', portoff == len-4 ? -1 : frame[portoff],  // 帧端口
+              "FRMPayload",'H', max(0, len-5-portoff), &frame[portoff+1],  // 帧载荷
+              "MIC",       'i', mic,                          // 消息完整性码
               NULL);
+              
+    // 记录日志信息
     xprintf(lbuf, "%s mhdr=%02X DevAddr=%08X FCtrl=%02X FCnt=%d FOpts=[%H] %4.2H mic=%d (%d bytes)",
             dir, mhdr, devaddr, fctrl, fcnt,
             foptslen, &frame[OFF_fopts],
             max(0, len-4-portoff), &frame[portoff], mic, len);
-    return 1;
+    return 1;  // 返回成功
 }
 
 
@@ -298,19 +343,19 @@ int s2e_parse_lora_frame(ujbuf_t* buf, const u1_t* frame, int len, dbuf_t* lbuf)
  *   主要用于验证信标帧的完整性。
  */
 static int crc16_no_table(uint8_t* pdu, int len) {
-    uint32_t remainder = 0;
-    uint32_t polynomial = 0x1021;
-    for( int i=0; i<len; i++ ) {
-        remainder ^= pdu[i] << 8;
-        for( int bit=0; bit < 8; bit++ ) {
-            if( remainder & 0x8000 ) {
-                remainder = (remainder << 1) ^ polynomial;
+    uint32_t remainder = 0;                // CRC计算的余数
+    uint32_t polynomial = 0x1021;          // CRC16使用的多项式
+    for( int i=0; i<len; i++ ) {           // 遍历数据的每个字节
+        remainder ^= pdu[i] << 8;          // 将字节数据移到高8位并异或到余数中
+        for( int bit=0; bit < 8; bit++ ) { // 处理每个字节的每一位
+            if( remainder & 0x8000 ) {     // 如果高位为1
+                remainder = (remainder << 1) ^ polynomial;  // 左移一位并异或多项式
             } else {
-                remainder <<= 1;
+                remainder <<= 1;           // 否则仅左移一位
             }
         }
     }
-    return remainder & 0xFFFF;
+    return remainder & 0xFFFF;            // 返回16位CRC值
 }
 
 
@@ -349,23 +394,35 @@ static int crc16_no_table(uint8_t* pdu, int len) {
  *      - 结果输出
  */
 void s2e_make_beacon(uint8_t* layout, sL_t epoch_secs, int infodesc, double lat, double lon, uint8_t* pdu) {
-    int time_off     = layout[0];
-    int infodesc_off = layout[1];
-    int bcn_len      = layout[2];
-    memset(pdu, 0, bcn_len);
+    int time_off     = layout[0];    // 时间字段偏移量
+    int infodesc_off = layout[1];    // 信息描述符偏移量
+    int bcn_len      = layout[2];    // 信标帧总长度
+    
+    memset(pdu, 0, bcn_len);         // 清空输出缓冲区
+    
+    // 填充时间戳(小端序)
     for( int i=0; i<4; i++ ) 
         pdu[time_off+i] = epoch_secs>>(8*i);
-    uint32_t ulon = (uint32_t)(lon / 180 * (1U<<31));
-    uint32_t ulat = (uint32_t)(lat /  90 * (1U<<31));
+    
+    // 转换经纬度为整数格式
+    uint32_t ulon = (uint32_t)(lon / 180 * (1U<<31));  // 将经度(-180到180)映射到整数范围
+    uint32_t ulat = (uint32_t)(lat /  90 * (1U<<31));  // 将纬度(-90到90)映射到整数范围
+    
+    // 填充位置信息(小端序)
     for( int i=0; i<3; i++ ) {
-        pdu[infodesc_off+1+i] = ulon>>(8*i);
-        pdu[infodesc_off+4+i] = ulat>>(8*i);
+        pdu[infodesc_off+1+i] = ulon>>(8*i);  // 填充经度(3字节)
+        pdu[infodesc_off+4+i] = ulat>>(8*i);  // 填充纬度(3字节)
     } 
-    pdu[infodesc_off] = infodesc;
-    int crc1 = crc16_no_table(&pdu[0],infodesc_off-2);
-    int crc2 = crc16_no_table(&pdu[infodesc_off], bcn_len-2-infodesc_off);
+    
+    pdu[infodesc_off] = infodesc;    // 填充信息描述符
+    
+    // 计算并填充CRC
+    int crc1 = crc16_no_table(&pdu[0],infodesc_off-2);               // 计算第一部分CRC
+    int crc2 = crc16_no_table(&pdu[infodesc_off], bcn_len-2-infodesc_off);  // 计算第二部分CRC
+    
+    // 填充CRC值(小端序)
     for( int i=0; i<2; i++ ) {
-        pdu[infodesc_off-2+i] = crc1>>(8*i);
-        pdu[bcn_len-2+i]      = crc2>>(8*i);
+        pdu[infodesc_off-2+i] = crc1>>(8*i);  // 填充第一个CRC
+        pdu[bcn_len-2+i]      = crc2>>(8*i);  // 填充第二个CRC
     }
 }

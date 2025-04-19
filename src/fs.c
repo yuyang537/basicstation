@@ -53,11 +53,59 @@
 #include <stdio.h>
 #include <fcntl.h>
 
+// 定义通用错误码常量（如果未定义）
+#ifndef EFAULT
+#define EFAULT      14      // 错误的地址
+#endif
+#ifndef EINVAL
+#define EINVAL      22      // 无效的参数
+#endif
+#ifndef ENOSPC
+#define ENOSPC      28      // 设备上没有空间
+#endif
+#ifndef ENAMETOOLONG
+#define ENAMETOOLONG 36     // 文件名太长
+#endif
+#ifndef ENOENT
+#define ENOENT       2      // 文件或目录不存在
+#endif
+#ifndef EBADF
+#define EBADF        9      // 错误的文件描述符
+#endif
+#ifndef ENFILE
+#define ENFILE      23      // 系统中打开的文件过多
+#endif
+#ifndef EXDEV
+#define EXDEV       18      // 跨设备链接
+#endif
+#ifndef ENOTDIR
+#define ENOTDIR     20      // 不是目录
+#endif
+#ifndef EACCES
+#define EACCES      13      // 权限被拒绝
+#endif
+#ifndef EMFILE
+#define EMFILE      24      // 打开的文件过多
+#endif
+
 #if defined(CFG_linux) || defined(CFG_flashsim)
 #include <sys/stat.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <unistd.h>
+#else
+// 为非Linux平台定义所需的错误码常量
+#define EFAULT      14      // 错误的地址
+#define EINVAL      22      // 无效的参数
+#define ENOSPC      28      // 设备上没有空间
+#define ENAMETOOLONG 36     // 文件名太长
+#define ENOENT       2      // 文件或目录不存在
+#define EBADF        9      // 错误的文件描述符
+#define ENFILE      23      // 系统中打开的文件过多
+#define EXDEV       18      // 跨设备链接
+#define ENOTDIR     20      // 不是目录
+#define EACCES      13      // 权限被拒绝
+#define EMFILE      24      // 打开的文件过多
 #endif // defined(CFG_linux)
 #include "s2conf.h"
 #include "rt.h"
@@ -261,6 +309,7 @@ static void decryptN (u4_t faddr, u4_t* data, uint u4cnt) {
 
 void wrFlash1 (u4_t faddr, u4_t data) {
     assert(faddr < (faddr >= FLASH_BEG_B ? FLASH_END_B : FLASH_END_A));
+    assert(faddr % 4 == 0);  // 确保地址按4字节对齐
     data = encrypt1(faddr, data);
     sys_writeFlash(faddr, &data, 1);
 }
@@ -274,12 +323,16 @@ static void wrFlash1wp (u4_t data) {
 u4_t rdFlash1 (u4_t faddr) {
     u4_t data;
     assert(faddr < flashFsMax());
+    assert(faddr % 4 == 0);  // 确保地址按4字节对齐
     sys_readFlash(faddr, &data, 1);
     return decrypt1(faddr, data);
 }
 
 void wrFlashN (u4_t faddr, u4_t* daddr, uint u4cnt, int keepData) {
     assert(faddr + u4cnt*4 <= (faddr >= FLASH_BEG_B ? FLASH_END_B : FLASH_END_A));
+    assert(faddr % 4 == 0);  // 确保地址按4字节对齐
+    assert(daddr != NULL);   // 确保数据指针有效
+    assert(u4cnt > 0);       // 确保数据数量有效
     encryptN(faddr, daddr, u4cnt);
     sys_writeFlash(faddr, daddr, u4cnt);
     if( keepData )
@@ -295,6 +348,9 @@ static void wrFlashNwp (u4_t* daddr, uint u4cnt, int keepData) {
 
 void rdFlashN(u4_t faddr, u4_t* daddr, uint u4cnt) {
     assert(faddr + u4cnt*4 <= flashFsMax());
+    assert(faddr % 4 == 0);  // 确保地址按4字节对齐
+    assert(daddr != NULL);   // 确保数据指针有效
+    assert(u4cnt > 0);       // 确保数据数量有效
     sys_readFlash(faddr, daddr, u4cnt);
     decryptN(faddr, daddr, u4cnt);
 }
@@ -376,12 +432,24 @@ static int isFlashFull (u4_t reqbytes) {
  * @return 规范化后的路径长度，0表示错误
  */
 int fs_fnNormalize (const char* fn, char* wb, int maxsz) {
+    assert(fn != NULL);      // 确保文件名指针有效
+    assert(wb != NULL);      // 确保输出缓冲区有效
+    assert(maxsz > 0);       // 确保缓冲区大小有效
+    
     int ri = 0, wi = 0;
     wb[0] = 0;
     if( maxsz <= 2 ) {
         errno = ENAMETOOLONG;
         return 0;
     }
+    
+    // 检查文件名长度，避免栈溢出
+    size_t fnlen = strlen(fn);
+    if (fnlen >= FS_MAX_FNSIZE) {
+        errno = ENAMETOOLONG;
+        return 0;
+    }
+    
     if( fn[0] != '/' ) {
         wi = strlen(cwd);
         if( wi+2 >= maxsz ) {
@@ -459,6 +527,11 @@ static int checkFilename (const char* fn) {
         errno = EFAULT;
         return 0;
     }
+    // 添加长度检查，防止过长文件名
+    if (strlen(fn) >= FS_MAX_FNSIZE) {
+        errno = ENAMETOOLONG;
+        return 0;
+    }
     char* wb = (char*)&auxbuf.u4[3];
     int fnlen = auxbuf.u4[0] = fs_fnNormalize(fn, wb, FS_MAX_FNSIZE);
 #if defined(CFG_linux)
@@ -523,11 +596,15 @@ static int fs_findFile (fctx_t* fctx, const char* fn) {
  * @return 0表示成功，-1表示失败
  */
 static int fs_handleFile (const char* fn, const char* fn2, u1_t cmd, u2_t ino) {
+    assert(cmd <= FSCMD_DELETE);    // 确保命令有效
+    assert(ino <= MAX_INO);         // 确保inode号有效
+    
     char* wb = (char*)&auxbuf.u1[12];
     int fnlen;
     if( fn == NULL ) {
         // 之前的操作已经将规范化的文件名放入auxbuf
         fnlen = auxbuf.u4[0];
+        assert(fnlen > 0 && fnlen < FS_MAX_FNSIZE); // 确保文件名长度有效
     } else {
         fnlen = fs_fnNormalize(fn, wb, FS_MAX_FNSIZE);
         if( fnlen == 0 )
@@ -581,11 +658,14 @@ static fh_t* fd2fh (int fd) {
         errno = EINVAL;
         return NULL;
     }
-    if( fhTable[fd-OFF_FD].ino == 0 || fhTable[fd-OFF_FD].ino > MAX_INO ) {
+    int index = fd - OFF_FD;
+    assert(index >= 0 && index < FS_MAX_FD); // 额外检查索引范围
+    
+    if( fhTable[index].ino == 0 || fhTable[index].ino > MAX_INO ) {
         errno = EBADF;
         return NULL;
     }
-    return &fhTable[fd-OFF_FD];
+    return &fhTable[index];
 }
 
 /**
@@ -622,6 +702,16 @@ static int fs_findNextDataRecord (fctx_t* fctx, u2_t ino) {
  * @return 实际读取的字节数，-1表示错误
  */
 int fs_read (int fd, void* dp, int dlen) {
+    assert(fd >= 0);                // 确保文件描述符有效
+    if (dp == NULL && dlen > 0) {   // 检查空指针
+        errno = EFAULT;
+        return -1;
+    }
+    if (dlen < 0) {                 // 检查负长度
+        errno = EINVAL;
+        return -1;
+    }
+    
     u1_t* data = (u1_t*)dp;
     fh_t* fh = fd2fh(fd);
     if( fh == NULL ) {
@@ -689,6 +779,16 @@ int fs_read (int fd, void* dp, int dlen) {
  * @return 实际写入的字节数，-1表示错误
  */
 int fs_write (int fd, const void* dp, int dlen) {
+    assert(fd >= 0);                // 确保文件描述符有效
+    if (dp == NULL && dlen > 0) {   // 检查空指针
+        errno = EFAULT;
+        return -1;
+    }
+    if (dlen < 0) {                 // 检查负长度
+        errno = EINVAL;
+        return -1;
+    }
+    
     const u1_t* data = (const u1_t*)dp;
     fh_t* fh = fd2fh(fd);
     if( fh == NULL ) {
@@ -920,6 +1020,20 @@ int fs_close(int fd) {
     return 0;
 }
 
+// 为非Linux平台提供基本的struct stat定义（如果需要）
+#if !defined(CFG_linux) && !defined(CFG_flashsim)
+#ifndef _SYS_STAT_H
+struct stat {
+    u2_t st_mode;     // 文件模式
+    u2_t st_ino;      // inode号
+    int  st_size;     // 文件大小（字节）
+    struct {
+        int tv_sec;   // 秒
+    } st_ctim;        // 创建时间
+};
+#endif
+#endif
+
 /**
  * @brief 获取文件状态
  * @param fn 文件名
@@ -927,6 +1041,8 @@ int fs_close(int fd) {
  * @return 0表示成功，-1表示失败
  */
 int fs_stat (str_t fn, struct stat* st) {
+    assert(st != NULL);             // 确保stat结构有效
+    
     int fnlen = checkFilename(fn);
 #if defined(CFG_linux)
     if( fnlen == -1 ) {
@@ -960,6 +1076,9 @@ int fs_stat (str_t fn, struct stat* st) {
  * @return 0表示成功，-1表示失败
  */
 int fs_lseek (int fd, int offset, int whence) {
+    assert(fd >= 0);                // 确保文件描述符有效
+    assert(whence == SEEK_SET || whence == SEEK_CUR || whence == SEEK_END); // 确保whence有效
+    
     fh_t* fh = fd2fh(fd);
     if( fh == NULL )
         return -1;
@@ -1172,6 +1291,8 @@ void fs_info(fsinfo_t* infop) {
  * @param emergency 是否紧急GC
  */
 void fs_gc (int emergency) {
+    assert(emergency == 0 || emergency == 1); // 确保emergency参数有效
+    
     // Invalidate all open files
     // If any one of them survises GC it'll be reinstated
     for( int fdi=0; fdi < FS_MAX_FD; fdi++ ) {
@@ -1344,10 +1465,12 @@ void fs_erase () {
  * @return 0-原始闪存，1-分区恢复，2-需要GC
  */
 int fs_ini (u4_t key[4]) {
+    assert(fsSection == -1);        // 确保文件系统未初始化
     if( fsSection != -1 )
         return -1;
     sys_iniFlash();
     if( key ) {
+        assert(key[0] != 0 || key[1] != 0 || key[2] != 0 || key[3] != 0); // 确保至少有一个密钥部分不为0
         memcpy(flashKey, key, sizeof(flashKey));
     }
     return fs_ck();
