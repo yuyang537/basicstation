@@ -26,11 +26,29 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+// Linux平台条件编译：确保此代码仅在Linux平台上编译
 #if defined(CFG_linux)
 
+// 声明sys_main函数，这是程序的实际入口点
+// sys_main函数在sys_linux.c中实现，包含所有主要的初始化逻辑
 extern int sys_main (int argc, char** argv);
 
+/**
+ * 程序主入口点
+ * 这是LoRa Basics Station程序启动的第一个函数
+ * 
+ * @param argc 命令行参数个数
+ * @param argv 命令行参数字符串数组
+ * @return 程序退出状态码：0表示成功，非0表示错误
+ * 
+ * 功能说明：
+ * - 这个main函数只是一个简单的包装器
+ * - 实际的程序逻辑都在sys_main函数中实现
+ * - 这种设计允许在不同平台上有不同的main函数实现
+ */
 int main (int argc, char** argv) {
+    // 直接调用sys_main函数并返回其结果
+    // sys_main包含所有平台相关的初始化代码和主要业务逻辑
     return sys_main(argc, argv);
 }
 
