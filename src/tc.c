@@ -38,6 +38,13 @@ tc_t* TC;
 static s1_t tstateLast;
 
 
+/**
+ * TC操作完成处理函数
+ * 当TC操作（连接、断开等）完成时调用此函数进行清理
+ * 
+ * @param tc TC实例指针
+ * @param tstate 最终状态码
+ */
 static void tc_done (tc_t* tc, s1_t tstate) {
     tc->tstate = tstate;
     ws_free(&tc->ws);
@@ -46,6 +53,12 @@ static void tc_done (tc_t* tc, s1_t tstate) {
 }
 
 
+/**
+ * TC超时处理函数
+ * 当TC操作超时时调用此函数
+ * 
+ * @param tmr 超时定时器指针
+ */
 static void tc_timeout (tmr_t* tmr) {
     tc_t* tc = timeout2tc(tmr);
     LOG(MOD_TCE|ERROR, "TC engine timed out");
@@ -53,6 +66,13 @@ static void tc_timeout (tmr_t* tmr) {
 }
 
 
+/**
+ * MUXS连接事件处理函数
+ * 处理与LNS MUXS服务器的WebSocket连接事件
+ * 
+ * @param _conn 连接对象指针
+ * @param ev 事件类型
+ */
 static void tc_muxs_connection (conn_t* _conn, int ev) {
     tc_t* tc = conn2tc(_conn);
     if( ev == WSEV_CONNECTED ) {
@@ -114,6 +134,12 @@ static void tc_muxs_connection (conn_t* _conn, int ev) {
 }
 
 
+/**
+ * 连接到MUXS服务器
+ * 使用从INFOS获得的URI信息连接到MUXS
+ * 
+ * @param tc TC实例指针
+ */
 static void tc_connect_muxs (tc_t* tc) {
     char* u = tc->muxsuri;
     int   tlsmode  = u[0];
@@ -268,10 +294,23 @@ static void tc_sendBinary (s2ctx_t* s2ctx, dbuf_t* buf) {
 }
 
 
+/**
+ * TC引擎默认完成回调函数
+ * 当TC操作完成时继续TC引擎的运行
+ * 
+ * @param timeout 超时定时器指针
+ */
 void tc_ondone_default (tmr_t* timeout) {
     tc_continue(timeout2tc(timeout));
 }
 
+/**
+ * TC引擎初始化函数
+ * 创建并初始化TC引擎实例
+ * 
+ * @param ondone 完成回调函数，如果为NULL则使用默认回调
+ * @return 初始化完成的TC实例指针
+ */
 tc_t* tc_ini (tmrcb_t ondone) {
     assert(TC_RECV_BUFFER_SIZE > MAX_HOSTNAME_LEN + MAX_PORT_LEN + 2);
     tc_t* tc = rt_malloc(tc_t);
@@ -289,6 +328,12 @@ tc_t* tc_ini (tmrcb_t ondone) {
 }
 
 
+/**
+ * 释放TC引擎资源
+ * 清理TC实例并释放相关资源
+ * 
+ * @param tc TC实例指针
+ */
 void tc_free (tc_t* tc) {
     if( tc == NULL )
         return;
@@ -301,6 +346,12 @@ void tc_free (tc_t* tc) {
 }
 
 
+/**
+ * 启动TC引擎
+ * 开始TC引擎的连接流程，首先连接到INFOS服务获取MUXS信息
+ * 
+ * @param tc TC实例指针
+ */
 void tc_start (tc_t* tc) {
     assert(tc->tstate == TC_INI);
     int tstate_err = TC_ERR_NOURI;
@@ -386,6 +437,10 @@ void tc_continue (tc_t* tc) {
 }
 
 
+/**
+ * 停止TC引擎
+ * 终止当前运行的TC引擎并清理资源
+ */
 void sys_stopTC () {
     if( TC != NULL ) {
         LOG(MOD_TCE|INFO, "Terminating TC engine");
@@ -396,6 +451,10 @@ void sys_stopTC () {
 }
 
 
+/**
+ * 启动TC引擎
+ * 如果TC引擎未运行且未禁用TC，则启动新的TC引擎实例
+ */
 void sys_startTC () {
     if( TC != NULL || sys_noTC )
         return;  // already running
@@ -406,9 +465,19 @@ void sys_startTC () {
 }
 
 
+/**
+ * TC引擎初始化
+ * 执行TC引擎的全局初始化（目前为空实现）
+ */
 void sys_iniTC () {
 }
 
+/**
+ * 获取TC引擎状态
+ * 返回当前TC引擎的状态
+ * 
+ * @return TC状态码，如果TC未运行则返回最后状态
+ */
 s1_t sys_statusTC () {
     return TC ? TC->tstate : tstateLast;
 }
