@@ -173,12 +173,12 @@ void aio_loop () {
 
 
 void aio_ini () {
-   for( int i=0; i < N_AIO_HANDLES; i++ )
-       aioHandles[i].fd = -1;
+   for( int i=0; i < N_AIO_HANDLES; i++ )  // 初始化所有异步IO句柄
+       aioHandles[i].fd = -1;  // 将文件描述符设置为-1表示未使用
 #if defined(CFG_timerfd)
-    timerFD = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK|TFD_CLOEXEC);
+    timerFD = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK|TFD_CLOEXEC);  // 创建定时器文件描述符
     if( timerFD == -1 )
-        rt_fatal("timerfd_create failed: %s", strerror(errno));      // LCOV_EXCL_LINE
+        rt_fatal("timerfd_create failed: %s", strerror(errno));  // 如果创建失败，打印错误信息并退出
 #endif // defined(CFG_timerfd)
 }
 

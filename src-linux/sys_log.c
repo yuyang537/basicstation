@@ -241,36 +241,34 @@ void sys_addLog (const char *logline, int len) {
 
 
 void sys_iniLogging (struct logfile* lf, int captureStdio) {
-    logfile = lf;
-    if( logfile->path && captureStdio ) {
-        // Replace stdout/stderr with a pipe and drain its data
-        // into the configured log file (only on master, slaves inherit these pipes)
-        if( stdout_aio == NULL ) {
-            int fds[2] = { -1, -1 };
-            if( pipe2(fds, O_NONBLOCK) == -1 ) {
-                rt_fatal("Failed to create stdout/stderr pipe: %s", strerror(errno));
+    logfile = lf;  // 设置日志文件结构
+    if( logfile->path && captureStdio ) {  // 如果日志文件路径存在并且需要捕获标准IO
+        // 替换stdout/stderr为管道，并将其数据写入配置的日志文件
+        if( stdout_aio == NULL ) {  // 如果标准输出异步IO未初始化
+            int fds[2] = { -1, -1 };  // 定义文件描述符数组
+            if( pipe2(fds, O_NONBLOCK) == -1 ) {  // 创建非阻塞管道
+                rt_fatal("Failed to create stdout/stderr pipe: %s", strerror(errno));  // 如果创建失败，打印错误信息并退出
             }
-            int flags = fcntl(fds[1], F_GETFL, 0);
+            int flags = fcntl(fds[1], F_GETFL, 0);  // 获取文件状态标志
             if( flags != -1 )
-                fcntl(fds[1], F_SETFL, flags & ~O_NONBLOCK);
-            orig_stderr = dup(STDERR_FILENO);
-            dup2(fds[1], STDOUT_FILENO);
-            dup2(fds[1], STDERR_FILENO);
-            close(fds[1]);
-            int fd = open("/dev/null", O_RDONLY);
-            dup2(fd, STDIN_FILENO);
-            close(fd);
+                fcntl(fds[1], F_SETFL, flags & ~O_NONBLOCK);  // 清除非阻塞标志
+            orig_stderr = dup(STDERR_FILENO);  // 复制标准错误文件描述符
+            dup2(fds[1], STDOUT_FILENO);  // 重定向标准输出到管道
+            dup2(fds[1], STDERR_FILENO);  // 重定向标准错误到管道
+            close(fds[1]);  // 关闭管道写端
+            int fd = open("/dev/null", O_RDONLY);  // 打开/dev/null
+            dup2(fd, STDIN_FILENO);  // 重定向标准输入到/dev/null
+            close(fd);  // 关闭文件描述符
 
-            stdout_idx = MAX_LOGHDR;
-            stdout_aio = aio_open(stdout_buf, fds[0], stdout_read, NULL);
-            stdout_read(stdout_aio);
+            stdout_idx = MAX_LOGHDR;  // 设置标准输出索引
+            stdout_aio = aio_open(stdout_buf, fds[0], stdout_read, NULL);  // 打开标准输出异步IO
+            stdout_read(stdout_aio);  // 读取标准输出
         }
     } else {
-        aio_close(stdout_aio);
-        stdout_aio = NULL;
+        aio_close(stdout_aio);  // 关闭标准输出异步IO
+        stdout_aio = NULL;  // 将标准输出异步IO置为空
     }
-    atexit(sys_flushLog);
-
+    atexit(sys_flushLog);  // 注册程序退出时刷新日志的函数
 }
 
 

@@ -422,21 +422,21 @@ sL_t ts_newXtimeSession (u1_t txunit) {
 
 // Initialize timesync module - run every time we start a new session
 void ts_iniTimesync () {
-    ppsOffset = -1;
-    gpsOffset = 0;
-    no_pps_thres = NO_PPS_ALARM_INI;
-    memset(&ppsSync, 0, sizeof(ppsSync));   // no PPS ever seen
-    memset(&txunit_stats, 0, sizeof(txunit_stats));
+    ppsOffset = -1;  // 初始化PPS偏移
+    gpsOffset = 0;  // 初始化GPS偏移
+    no_pps_thres = NO_PPS_ALARM_INI;  // 设置无PPS报警初始阈值
+    memset(&ppsSync, 0, sizeof(ppsSync));   // 清空PPS同步结构
+    memset(&txunit_stats, 0, sizeof(txunit_stats));  // 清空传输单元统计信息
     for( int i=0; i<MAX_TXUNITS; i++ )
-        txunit_stats[i].drift_thres = MAX_MCU_DRIFT_THRES;
-    syncWobble = -1;
-    pps_drifts_widx = 0;
-    syncQual_thres = INT_MAX;
-    syncLnsCnt = 0;
-    lastReport = 0;
-    sum_mcu_drifts = 0;
-    memset(timesyncs, 0, sizeof(timesyncs));
-    rt_clrTimer(&syncLnsTmr);
+        txunit_stats[i].drift_thres = MAX_MCU_DRIFT_THRES;  // 设置最大MCU漂移阈值
+    syncWobble = -1;  // 初始化同步抖动
+    pps_drifts_widx = 0;  // 初始化PPS漂移索引
+    syncQual_thres = INT_MAX;  // 设置同步质量阈值
+    syncLnsCnt = 0;  // 初始化同步LNS计数
+    lastReport = 0;  // 初始化最后报告时间
+    sum_mcu_drifts = 0;  // 初始化MCU漂移总和
+    memset(timesyncs, 0, sizeof(timesyncs));  // 清空时间同步结构
+    rt_clrTimer(&syncLnsTmr);  // 清除同步LNS定时器
 }
 
 

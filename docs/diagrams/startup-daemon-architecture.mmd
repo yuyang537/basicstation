@@ -1,0 +1,84 @@
+graph TB
+    subgraph "系统启动流程"
+        Start["程序启动 sys_main()"] --> Check{"检查运行模式"}
+        Check -->|普通模式| Direct["直接启动 startupMaster"]
+        Check -->|守护进程模式| Daemon["守护进程模式"]
+        Check -->|强制模式| Force["杀死旧进程"]
+        Check -->|杀死模式| Kill["退出程序"]
+        
+        Force --> Daemon
+    end
+    
+    subgraph "守护进程初始化"
+        Daemon --> SetLog["设置日志文件"]
+        SetLog --> Fork1["第一次fork 创建守护进程"]
+        Fork1 --> Parent1["父进程"]
+        Fork1 --> Child1["子进程 守护进程"]
+        
+        Parent1 --> WriteP["写入PID文件"]
+        WriteP --> ExitP["父进程退出"]
+        
+        Child1 --> SetSID["创建新会话 setsid()"]
+        SetSID --> InitSys["初始化子系统"]
+        InitSys --> StartD["启动守护进程循环"]
+    end
+    
+    subgraph "守护进程工作循环"
+        StartD --> SetDead["设置系统状态为死亡"]
+        SetDead --> FlushLog["刷新日志"]
+        FlushLog --> Fork2["第二次fork 创建工作进程"]
+        
+        Fork2 --> Parent2["父进程 守护进程"]
+        Fork2 --> Child2["子进程 工作进程"]
+        
+        Parent2 --> SavePID["保存工作进程PID"]
+        SavePID --> StartMonitor["开始监控工作进程"]
+        
+        Child2 --> InitWorker["初始化工作进程日志"]
+        InitWorker --> LogStart["记录启动日志"]
+        LogStart --> StartMain["启动主处理逻辑"]
+        StartMain --> MainLoop["进入主事件循环"]
+    end
+    
+    subgraph "进程监控循环"
+        StartMonitor --> WaitLoop["监控循环 waitForWorker()"]
+        WaitLoop --> WaitPID["非阻塞检查子进程"]
+        WaitPID --> CheckStatus{"检查进程状态"}
+        
+        CheckStatus -->|正常运行| SetTimer["设置下次检查定时器"]
+        SetTimer --> WaitLoop
+        
+        CheckStatus -->|已死亡| LogDeath["记录进程死亡"]
+        LogDeath --> ClearPID["清除工作进程ID"]
+        ClearPID --> Restart["重启守护进程"]
+        Restart --> SetDead
+    end
+    
+    subgraph "PID管理功能"
+        PID1["生成PID文件路径"] --> PID2["读取PID文件"]
+        PID2 --> PID3["写入PID文件"]
+        PID3 --> PID4["杀死旧进程"]
+        
+        PID4 --> Check1{"检查进程类型"}
+        Check1 -->|进程组领导者| KillGroup["杀死进程组"]
+        Check1 -->|普通进程| KillProc["杀死单个进程"]
+        KillGroup --> KillGroup2["强制杀死进程组"]
+        KillProc --> KillProc2["强制杀死进程"]
+    end
+    
+    style Start fill:#e1f5fe
+    style Daemon fill:#f3e5f5
+    style SetDead fill:#fff3e0
+    style MainLoop fill:#e8f5e8
+    style WaitLoop fill:#ffe0b2
+    style PID1 fill:#fce4ec
+    
+    classDef daemon fill:#ffecb3
+    classDef worker fill:#c8e6c9
+    classDef monitor fill:#ffe0b2
+    classDef pidmgmt fill:#fce4ec
+    
+    class SetLog,Fork1,Parent1,Child1,SetSID,InitSys,StartD daemon
+    class Child2,InitWorker,LogStart,StartMain,MainLoop worker
+    class StartMonitor,WaitLoop,WaitPID,CheckStatus,SetTimer,LogDeath,ClearPID,Restart monitor
+    class PID1,PID2,PID3,PID4,Check1,KillGroup,KillProc,KillGroup2,KillProc2 pidmgmt

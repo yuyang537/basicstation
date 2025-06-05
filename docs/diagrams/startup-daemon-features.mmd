@@ -1,0 +1,61 @@
+graph TD
+    subgraph "startupDaemon 核心功能"
+        A["程序启动 sys_main()"] --> B{"检查启动模式"}
+        B -->|守护进程模式| C["守护进程初始化"]
+        B -->|普通模式| D["直接启动主进程"]
+        B -->|强制模式| E["杀死旧进程后启动"]
+        B -->|杀死模式| F["仅杀死旧进程"]
+    end
+    
+    subgraph "双层fork架构"
+        C --> G["第一次fork 创建守护进程"]
+        G --> H["父进程退出 写入PID文件"]
+        G --> I["子进程继续 会话独立"]
+        I --> J["第二次fork 创建工作进程"]
+        J --> K["父进程 守护进程 监控工作进程"]
+        J --> L["子进程 工作进程 执行主逻辑"]
+    end
+    
+    subgraph "进程监控与重启"
+        K --> M["waitForWorker() 500ms轮询检查"]
+        M --> N{"工作进程状态"}
+        N -->|正常运行| M
+        N -->|进程死亡| O["记录死亡日志 清理资源"]
+        O --> P["重启机制 startupDaemon()"]
+        P --> J
+    end
+    
+    subgraph "PID管理机制"
+        Q["生成PID文件路径"] --> R["读取现有PID 检查进程存在"]
+        R --> S["写入新PID 标记进程运行"]
+        S --> T["杀死旧进程 SIGINT + SIGKILL"]
+    end
+    
+    subgraph "主要特点"
+        Feature1["自动重启 工作进程死亡时重启"]
+        Feature2["进程隔离 双层fork架构"]
+        Feature3["会话独立 脱离控制终端"]
+        Feature4["资源管理 PID文件管理"]
+        Feature5["错误恢复 监控和日志记录"]
+        Feature6["信号处理 优雅关闭机制"]
+    end
+    
+    L --> MainWork["aio_loop() 主事件循环 LoRa数据处理 网络通信 Web服务"]
+    
+    style A fill:#e1f5fe
+    style C fill:#f3e5f5
+    style J fill:#fff3e0
+    style M fill:#ffe0b2
+    style MainWork fill:#e8f5e8
+    
+    classDef daemon fill:#ffecb3
+    classDef worker fill:#c8e6c9
+    classDef monitor fill:#ffe0b2
+    classDef pidmgmt fill:#fce4ec
+    classDef features fill:#f1f8e9
+    
+    class G,H,I,K daemon
+    class J,L,MainWork worker
+    class M,N,O,P monitor
+    class Q,R,S,T pidmgmt
+    class Feature1,Feature2,Feature3,Feature4,Feature5,Feature6 features

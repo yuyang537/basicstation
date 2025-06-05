@@ -1,0 +1,119 @@
+flowchart TB
+    %% 主进程和守护进程管理
+    subgraph "进程管理层"
+        MainProc["主进程 (station_main.c)<br/>PID管理器"]:::main
+        DaemonCtrl["守护进程控制器<br/>进程监控与重启"]:::daemon
+        ProcessMon["进程监控<br/>健康检查"]:::monitor
+    end
+
+    %% 核心工作进程
+    subgraph "核心工作进程"
+        StationCore["Station核心进程<br/>s2e.c - 主状态机"]:::core
+        ConfigProc["配置管理进程<br/>s2conf.c"]:::config
+        RadioProc["无线电管理进程<br/>RAL层"]:::radio
+    end
+
+    %% 网络进程
+    subgraph "网络通信进程"
+        TCProc["TC协议处理进程<br/>tc.c - WebSocket通信"]:::network
+        CUPSProc["CUPS协议处理进程<br/>cups.c - HTTPS通信"]:::network
+        TLSProc["TLS处理进程<br/>tls.c - 加密通信"]:::network
+        HTTPProc["HTTP服务进程<br/>web.c - Web接口"]:::network
+    end
+
+    %% 平台特定进程
+    subgraph "平台服务进程"
+        SysLinuxProc["Linux系统服务<br/>sys_linux.c"]:::platform
+        LogProc["日志管理进程<br/>sys_log.c"]:::platform
+        CmdFIFO["命令FIFO进程<br/>cmdfifo.c"]:::platform
+        RemoteShell["远程Shell进程<br/>rmtsh.c"]:::platform
+    end
+
+    %% RAL进程分解
+    subgraph "无线电抽象层进程"
+        RALMaster["RAL主进程<br/>ral_master.c"]:::ral
+        RALSlave["RAL从进程<br/>ral_slave.c"]:::ral
+        LGWDriver["libloragw驱动进程<br/>硬件接口"]:::ral
+        TimeSyncProc["时间同步进程<br/>timesync.c"]:::ral
+    end
+
+    %% 外部接口进程
+    subgraph "外部接口"
+        SPIInterface["SPI接口进程<br/>硬件通信"]:::external
+        LNSConnection["LNS连接进程<br/>网络服务器通信"]:::external
+        CUPSConnection["CUPS服务器连接<br/>配置服务器"]:::external
+    end
+
+    %% 进程间通信
+    MainProc -->|fork/exec| StationCore
+    MainProc -->|监控| DaemonCtrl
+    DaemonCtrl -->|重启| ProcessMon
+    ProcessMon -->|健康检查| StationCore
+
+    %% 核心进程交互
+    StationCore -->|启动| ConfigProc
+    StationCore -->|启动| RadioProc
+    StationCore -->|启动| TCProc
+    StationCore -->|启动| CUPSProc
+    
+    %% 配置流程
+    ConfigProc -->|读取配置| StationCore
+    CUPSProc -->|获取远程配置| ConfigProc
+    
+    %% 网络通信流程
+    TCProc -->|使用TLS| TLSProc
+    CUPSProc -->|使用TLS| TLSProc
+    TCProc -->|连接到| LNSConnection
+    CUPSProc -->|连接到| CUPSConnection
+    HTTPProc -->|提供Web界面| StationCore
+
+    %% 无线电流程
+    RadioProc -->|控制| RALMaster
+    RALMaster -->|管理| RALSlave
+    RALSlave -->|驱动| LGWDriver
+    LGWDriver -->|通信| SPIInterface
+    TimeSyncProc -->|同步| RadioProc
+
+    %% 平台服务
+    SysLinuxProc -->|系统调用| StationCore
+    LogProc -->|记录日志| StationCore
+    CmdFIFO -->|命令接口| RemoteShell
+    RemoteShell -->|远程控制| StationCore
+
+    %% 数据流向
+    SPIInterface -.->|LoRa数据| RALSlave
+    RALSlave -.->|处理数据| RadioProc
+    RadioProc -.->|转发数据| StationCore
+    StationCore -.->|发送到LNS| TCProc
+    
+    %% 配置数据流
+    CUPSConnection -.->|配置数据| CUPSProc
+    CUPSProc -.->|应用配置| ConfigProc
+    ConfigProc -.->|更新参数| StationCore
+
+    %% 进程生命周期管理
+    subgraph "进程生命周期"
+        Init["初始化阶段"]:::lifecycle
+        Running["运行阶段"]:::lifecycle
+        Shutdown["关闭阶段"]:::lifecycle
+        Restart["重启阶段"]:::lifecycle
+    end
+
+    MainProc -->|启动| Init
+    Init -->|完成| Running
+    Running -->|异常/信号| Shutdown
+    Shutdown -->|清理| Restart
+    Restart -->|重新| Init
+
+    %% 样式定义
+    classDef main fill:#ff9999,stroke:#ff0000,stroke-width:3px,color:#000
+    classDef daemon fill:#ffcc99,stroke:#ff6600,stroke-width:2px,color:#000
+    classDef monitor fill:#ffff99,stroke:#ffcc00,stroke-width:2px,color:#000
+    classDef core fill:#99ccff,stroke:#0066cc,stroke-width:3px,color:#000
+    classDef config fill:#99ff99,stroke:#00cc00,stroke-width:2px,color:#000
+    classDef radio fill:#cc99ff,stroke:#6600cc,stroke-width:2px,color:#000
+    classDef network fill:#ffccff,stroke:#cc00cc,stroke-width:2px,color:#000
+    classDef platform fill:#ccffcc,stroke:#00cc66,stroke-width:2px,color:#000
+    classDef ral fill:#ccccff,stroke:#6666cc,stroke-width:2px,color:#000
+    classDef external fill:#ffcccc,stroke:#cc6666,stroke-width:2px,color:#000
+    classDef lifecycle fill:#f0f0f0,stroke:#808080,stroke-width:1px,color:#000 

@@ -381,35 +381,35 @@ static int backupConfigFiles (int cat, int rollFwd) {
 }
 
 void setupConfigFilenames () {
-    assert((int)SYS_CRED_CUPS  == (int)FN_CUPS  && (int)SYS_CRED_TC     == (int)FN_TC);
-    assert((int)SYS_CRED_REG   == (int)FN_REG   && (int)SYS_CRED_BAK    == (int)FN_BAK && (int)SYS_CRED_BOOT  == (int)FN_BOOT);
-    assert((int)SYS_CRED_TRUST == (int)FN_TRUST && (int)SYS_CRED_MYCERT == (int)FN_CRT && (int)SYS_CRED_MYKEY == (int)FN_KEY);
-    char filepath[MAX_FILEPATH_LEN];
-    dbuf_t b = dbuf_ini(filepath);
+    assert((int)SYS_CRED_CUPS  == (int)FN_CUPS  && (int)SYS_CRED_TC     == (int)FN_TC);  // 确保SYS_CRED和FN常量一致
+    assert((int)SYS_CRED_REG   == (int)FN_REG   && (int)SYS_CRED_BAK    == (int)FN_BAK && (int)SYS_CRED_BOOT  == (int)FN_BOOT);  // 确保SYS_CRED和FN常量一致
+    assert((int)SYS_CRED_TRUST == (int)FN_TRUST && (int)SYS_CRED_MYCERT == (int)FN_CRT && (int)SYS_CRED_MYKEY == (int)FN_KEY);  // 确保SYS_CRED和FN常量一致
+    char filepath[MAX_FILEPATH_LEN];  // 定义文件路径缓冲区
+    dbuf_t b = dbuf_ini(filepath);  // 初始化动态缓冲区
 
-    for( int cat=0; cat < nFN_CAT; cat++ ) {
-        b.pos = 0;
-        xputs(&b, homeDir, -1);
-        xputs(&b, categoryName(cat), -1);
-        int p0 = b.pos;
-        for( int set=0; set < nFN_SET; set++ ) {
-            xputs(&b, &sFN_SET[set*6], -1);
-            int p1 = b.pos;
-            for( int ext=0; ext < nFN_EXT; ext++ ) {
-                xputs(&b, ".", 1);
-                xputs(&b, &sFN_EXT[ext*6], -1);
-                if( !xeos(&b) )
-                    rt_fatal("File path too big: %s", b.buf);
-                configFilename(cat,set,ext) = rt_strdup(b.buf);
-                b.pos = p1;
+    for( int cat=0; cat < nFN_CAT; cat++ ) {  // 遍历每个类别
+        b.pos = 0;  // 重置缓冲区位置
+        xputs(&b, homeDir, -1);  // 将主目录路径放入缓冲区
+        xputs(&b, categoryName(cat), -1);  // 将类别名称放入缓冲区
+        int p0 = b.pos;  // 保存当前位置
+        for( int set=0; set < nFN_SET; set++ ) {  // 遍历每个集合
+            xputs(&b, &sFN_SET[set*6], -1);  // 将集合名称放入缓冲区
+            int p1 = b.pos;  // 保存当前位置
+            for( int ext=0; ext < nFN_EXT; ext++ ) {  // 遍历每个扩展名
+                xputs(&b, ".", 1);  // 添加点号
+                xputs(&b, &sFN_EXT[ext*6], -1);  // 将扩展名放入缓冲区
+                if( !xeos(&b) )  // 检查缓冲区是否溢出
+                    rt_fatal("File path too big: %s", b.buf);  // 打印错误信息并退出
+                configFilename(cat,set,ext) = rt_strdup(b.buf);  // 复制缓冲区内容到配置文件名
+                b.pos = p1;  // 恢复到集合位置
             }
-            b.pos = p0;
+            b.pos = p0;  // 恢复到类别位置
         }
-        for( int taf=0; taf < nFN_TAF; taf++ ) {
-            xputs(&b, &sFN_TAF[taf*10], -1);
-            xeos(&b);
-            transactionFilename(cat,taf) = rt_strdup(b.buf);
-            b.pos = p0;
+        for( int taf=0; taf < nFN_TAF; taf++ ) {  // 遍历每个事务文件
+            xputs(&b, &sFN_TAF[taf*10], -1);  // 将事务文件名放入缓冲区
+            xeos(&b);  // 确保缓冲区以空字符结尾
+            transactionFilename(cat,taf) = rt_strdup(b.buf);  // 复制缓冲区内容到事务文件名
+            b.pos = p0;  // 恢复到类别位置
         }
     }
 }

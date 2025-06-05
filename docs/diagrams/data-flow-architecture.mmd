@@ -1,0 +1,110 @@
+sequenceDiagram
+    participant HW as LoRa硬件<br/>(Concentrator)
+    participant SPI as SPI驱动接口
+    participant RAL as RAL层<br/>(无线电抽象)
+    participant Core as Station核心<br/>(s2e.c)
+    participant TC as TC协议处理器<br/>(tc.c)
+    participant TLS as TLS加密层<br/>(tls.c)
+    participant LNS as LoRa网络服务器<br/>(LNS)
+    participant CUPS as CUPS服务器<br/>(配置管理)
+    participant Config as 配置管理器<br/>(s2conf.c)
+    participant Web as Web接口<br/>(web.c)
+    participant Log as 日志系统<br/>(sys_log.c)
+
+    %% 系统启动和配置阶段
+    Note over Core,CUPS: 系统启动和配置获取阶段
+    Core->>Config: 加载本地配置
+    Config-->>Core: 返回配置数据
+    Core->>CUPS: 请求远程配置
+    CUPS->>TLS: 建立安全连接
+    TLS-->>CUPS: TLS握手完成
+    CUPS-->>Core: 返回配置和证书
+    Core->>Config: 更新配置参数
+    Core->>Log: 记录启动日志
+
+    %% 无线电初始化
+    Note over Core,HW: 无线电系统初始化阶段
+    Core->>RAL: 初始化无线电
+    RAL->>SPI: 配置SPI接口
+    SPI->>HW: 硬件初始化
+    HW-->>SPI: 硬件就绪
+    SPI-->>RAL: 接口就绪
+    RAL-->>Core: 无线电就绪
+
+    %% LNS连接建立
+    Note over Core,LNS: 网络连接建立阶段
+    Core->>TC: 启动TC协议
+    TC->>TLS: 建立WebSocket+TLS连接
+    TLS->>LNS: 连接LNS服务器
+    LNS-->>TLS: 连接确认
+    TLS-->>TC: 安全连接建立
+    TC-->>Core: LNS连接就绪
+
+    %% 上行数据流 (LoRa设备 -> LNS)
+    Note over HW,LNS: 上行数据处理流程
+    HW->>SPI: 接收LoRa数据包
+    SPI->>RAL: 原始数据包
+    RAL->>RAL: 数据包解析和验证
+    RAL->>Core: 处理后的LoRa帧
+    Core->>Core: 数据包聚合和去重
+    Core->>TC: 格式化为TC协议消息
+    TC->>TLS: 加密数据包
+    TLS->>LNS: 发送到LNS
+    LNS-->>TLS: ACK确认
+    TLS-->>TC: 传输确认
+    TC-->>Core: 发送成功
+    Core->>Log: 记录上行数据日志
+
+    %% 下行数据流 (LNS -> LoRa设备)
+    Note over LNS,HW: 下行数据处理流程
+    LNS->>TLS: 下行数据包
+    TLS->>TC: 解密数据包
+    TC->>Core: TC协议消息
+    Core->>Core: 调度和时序控制
+    Core->>RAL: LoRa传输请求
+    RAL->>RAL: 数据包格式化
+    RAL->>SPI: 发送指令
+    SPI->>HW: 传输LoRa数据
+    HW-->>SPI: 传输完成
+    SPI-->>RAL: 传输状态
+    RAL-->>Core: 传输确认
+    Core->>TC: 传输结果报告
+    TC->>TLS: 加密状态报告
+    TLS->>LNS: 发送状态到LNS
+    Core->>Log: 记录下行数据日志
+
+    %% 配置更新流程
+    Note over CUPS,RAL: 配置动态更新流程
+    CUPS->>Core: 配置更新通知
+    Core->>Config: 验证新配置
+    Config-->>Core: 配置验证结果
+    Core->>RAL: 应用无线电配置
+    RAL->>SPI: 更新硬件参数
+    SPI->>HW: 重新配置硬件
+    HW-->>SPI: 配置完成
+    SPI-->>RAL: 硬件更新确认
+    RAL-->>Core: 配置应用成功
+    Core->>Log: 记录配置更新
+
+    %% Web接口数据查询
+    Note over Web,Core: Web界面状态查询
+    Web->>Core: 请求系统状态
+    Core-->>Web: 返回运行状态
+    Web->>RAL: 请求无线电状态
+    RAL-->>Web: 返回信号质量等信息
+    Web->>Log: 查询日志记录
+    Log-->>Web: 返回日志数据
+
+    %% 错误处理和恢复
+    Note over Core,LNS: 错误处理和恢复流程
+    alt 网络连接断开
+        TC->>Core: 连接丢失通知
+        Core->>Core: 启动重连逻辑
+        Core->>TC: 重新建立连接
+        TC->>TLS: 重新连接LNS
+    else 硬件异常
+        RAL->>Core: 硬件错误通知
+        Core->>RAL: 重新初始化硬件
+        RAL->>SPI: 重置硬件接口
+    end
+    Core->>Log: 记录错误和恢复过程 

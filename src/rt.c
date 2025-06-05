@@ -126,12 +126,11 @@ void rt_fatal(const char* fmt, ...) {
 
 
 void rt_ini() {
-    // If system does not have a native UTC time then sys_utc() returns zero and we run with
-    // ustime_t (time since startup) for the time being. Once we get a connection to TC we
-    // replace this offset with MuxTime which is the servers UTC time.
-    ustime_t now = rt_getTime();
-    rt_utcOffset = sys_utc() - now;
-    rt_utcOffset_ts = now;
+    // 如果系统没有本地UTC时间，则sys_utc()返回零，我们暂时使用ustime_t（自启动以来的时间）
+    // 一旦我们与TC建立连接，我们就用服务器的UTC时间替换这个偏移量
+    ustime_t now = rt_getTime();  // 获取当前时间
+    rt_utcOffset = sys_utc() - now;  // 计算UTC偏移量
+    rt_utcOffset_ts = now;  // 设置UTC偏移时间戳
 }
 
 
@@ -252,24 +251,27 @@ void _rt_free_d (void* p, const char* f, int l) {
     free(p);
 }
 
+// 复制字符串s并返回新分配的内存地址
 char* rt_strdup (str_t s) {
-    if( s == NULL ) return NULL;
-    return strcpy(_rt_malloc(strlen(s)+1, 0), s);
+    if( s == NULL ) return NULL;  // 如果s为空，返回NULL
+    return strcpy(_rt_malloc(strlen(s)+1, 0), s);  // 分配内存并复制字符串
 }
 
+// 复制字符串s的前n个字符并返回新分配的内存地址
 char* rt_strdupn (str_t s, int n) {
-    if( s == NULL ) return NULL;
-    char* s2 = strncpy(_rt_malloc(n+1, 0), s, n);
-    s2[n] = 0;
+    if( s == NULL ) return NULL;  // 如果s为空，返回NULL
+    char* s2 = strncpy(_rt_malloc(n+1, 0), s, n);  // 分配内存并复制前n个字符
+    s2[n] = 0;  // 确保字符串以空字符结尾
     return s2;
 }
 
-char* rt_strdupq (str_t s) { // copy and double quote a string
-    if( s == NULL ) return NULL;
-    int n = strlen(s);
-    char* s2 = (char*)memcpy((char*)_rt_malloc(n+3, 0)+1, s, n)-1;
-    s2[0] = s2[n+1] = '"';
-    s2[n+2] = 0;
+// 复制字符串s并在其两端加上双引号，返回新分配的内存地址
+char* rt_strdupq (str_t s) { // 复制并双引号括起字符串
+    if( s == NULL ) return NULL;  // 如果s为空，返回NULL
+    int n = strlen(s);  // 获取字符串长度
+    char* s2 = (char*)memcpy((char*)_rt_malloc(n+3, 0)+1, s, n)-1;  // 分配内存并复制字符串
+    s2[0] = s2[n+1] = '"';  // 在字符串两端加上双引号
+    s2[n+2] = 0;  // 确保字符串以空字符结尾
     return s2;
 }
 

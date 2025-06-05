@@ -339,46 +339,50 @@ void sys_fatal (int code) {
     exit(code==0 ? FATAL_GENERIC : code);
 }
 
+// 生成PID文件路径
 static char* makePidFilename() {
-    return makeFilepath("~temp/station",".pid",NULL,0);
+    return makeFilepath("~temp/station",".pid",NULL,0);  // 生成临时目录下的station.pid文件路径
 }
 
+// 读取PID文件中的进程ID
 static int readPid() {
-    char* pidfile = makePidFilename();
-    dbuf_t b = readFile(pidfile,0);
-    const char* s = b.buf;
-    int pid = rt_readDec(&s);
-    rt_free(pidfile);
-    rt_free(b.buf);
-    return max(0,pid);
+    char* pidfile = makePidFilename();  // 获取PID文件路径
+    dbuf_t b = readFile(pidfile,0);  // 读取PID文件内容（不投诉错误）
+    const char* s = b.buf;  // 获取文件内容指针
+    int pid = rt_readDec(&s);  // 从字符串中读取十进制数值
+    rt_free(pidfile);  // 释放文件路径内存
+    rt_free(b.buf);  // 释放文件内容内存
+    return max(0,pid);  // 返回PID（确保非负值）
 }
 
+// 写入当前进程ID到PID文件
 static void writePid () {
-    char buf[16];
-    dbuf_t b = dbuf_ini(buf);
-    xprintf(&b, "%d", daemonPid ? daemonPid : getpid());
-    char* pidsfile = makePidFilename();
-    writeFile(pidsfile, b.buf, b.pos);
-    rt_free(pidsfile);
+    char buf[16];  // 临时缓冲区
+    dbuf_t b = dbuf_ini(buf);  // 初始化动态缓冲区
+    xprintf(&b, "%d", daemonPid ? daemonPid : getpid());  // 格式化PID字符串（守护进程PID或当前进程PID）
+    char* pidsfile = makePidFilename();  // 获取PID文件路径
+    writeFile(pidsfile, b.buf, b.pos);  // 写入PID到文件
+    rt_free(pidsfile);  // 释放文件路径内存
 }
 
 
+// 杀死旧的进程
 static void killOldPid () {
-    int pid = readPid();
-    if( daemonPid && pid == daemonPid )
-        return;  // worker started under daemon
-    if( pid > 0 ) {
-        pid_t pgid = getpgid(pid);
-        if( pgid == pid ) {
-            fprintf(stderr, "Killing process group %d\n", pid);
-            kill(-pid, SIGINT);  // if process group leader
-            rt_usleep(2000);
-            kill(-pid, SIGKILL);  // if process group leader
-        } else {
-            fprintf(stderr, "Killing process %d\n", pid);
-            kill( pid, SIGINT);  // if just a simple process
-            rt_usleep(2000);
-            kill( pid, SIGKILL);  // if just a simple process
+    int pid = readPid();  // 读取已存在的PID
+    if( daemonPid && pid == daemonPid )  // 如果PID与当前守护进程PID相同
+        return;  // 工作进程在守护进程下启动，无需杀死
+    if( pid > 0 ) {  // 如果存在有效的PID
+        pid_t pgid = getpgid(pid);  // 获取进程组ID
+        if( pgid == pid ) {  // 如果是进程组领导者
+            fprintf(stderr, "Killing process group %d\n", pid);  // 打印杀死进程组信息
+            kill(-pid, SIGINT);  // 发送SIGINT信号给整个进程组
+            rt_usleep(2000);  // 等待2毫秒
+            kill(-pid, SIGKILL);  // 发送SIGKILL信号给整个进程组（强制杀死）
+        } else {  // 如果是普通进程
+            fprintf(stderr, "Killing process %d\n", pid);  // 打印杀死进程信息
+            kill( pid, SIGINT);  // 发送SIGINT信号给单个进程
+            rt_usleep(2000);  // 等待2毫秒
+            kill( pid, SIGKILL);  // 发送SIGKILL信号给单个进程（强制杀死）
         }
     }
 }
@@ -391,27 +395,27 @@ static void leds_off () {
 
 void sys_ini () {
     LOG(MOD_SYS|INFO, "Logging     : %s (maxsize=%d, rotate=%d)\n",
-        logfile.path==NULL ? "stderr" : logfile.path, logfile.size, logfile.rotate);
-    LOG(MOD_SYS|INFO, "Station Ver : %s",  CFG_version " " CFG_bdate);
-    LOG(MOD_SYS|INFO, "Package Ver : %s",  sys_version());
-    LOG(MOD_SYS|INFO, "mbedTLS Ver : %s",  MBEDTLS_VERSION_STRING);
-    LOG(MOD_SYS|INFO, "proto EUI   : %:E\t(%s)", protoEUI, protoEuiSrc);
-    LOG(MOD_SYS|INFO, "prefix EUI  : %:E\t(%s)", prefixEUI, prefixEuiSrc);
-    LOG(MOD_SYS|INFO, "Station EUI : %:E", sys_eui());
-    LOG(MOD_SYS|INFO, "Station home: %s\t(%s)",  homeDir, homeDirSrc);
-    LOG(MOD_SYS|INFO, "Station temp: %s\t(%s)",  tempDir, tempDirSrc);
+        logfile.path==NULL ? "stderr" : logfile.path, logfile.size, logfile.rotate);  // 记录日志信息
+    LOG(MOD_SYS|INFO, "Station Ver : %s",  CFG_version " " CFG_bdate);  // 记录站点版本信息
+    LOG(MOD_SYS|INFO, "Package Ver : %s",  sys_version());  // 记录软件包版本信息
+    LOG(MOD_SYS|INFO, "mbedTLS Ver : %s",  MBEDTLS_VERSION_STRING);  // 记录mbedTLS版本信息
+    LOG(MOD_SYS|INFO, "proto EUI   : %:E\t(%s)", protoEUI, protoEuiSrc);  // 记录协议EUI信息
+    LOG(MOD_SYS|INFO, "prefix EUI  : %:E\t(%s)", prefixEUI, prefixEuiSrc);  // 记录前缀EUI信息
+    LOG(MOD_SYS|INFO, "Station EUI : %:E", sys_eui());  // 记录站点EUI信息
+    LOG(MOD_SYS|INFO, "Station home: %s\t(%s)",  homeDir, homeDirSrc);  // 记录站点主目录信息
+    LOG(MOD_SYS|INFO, "Station temp: %s\t(%s)",  tempDir, tempDirSrc);  // 记录站点临时目录信息
     if( sys_slaveIdx >= 0 ) {
-        LOG(MOD_SYS|INFO, "Station slave: %d", sys_slaveIdx);
+        LOG(MOD_SYS|INFO, "Station slave: %d", sys_slaveIdx);  // 记录站点从模式信息
     } else {
         if( gpsDevice )
-            LOG(MOD_SYS|INFO, "GPS device: %s", gpsDevice);
+            LOG(MOD_SYS|INFO, "GPS device: %s", gpsDevice);  // 记录GPS设备信息
     }
     if( sys_noTC || sys_noCUPS ) {
-        LOG(MOD_SYS|WARNING, "Station in NO-%s mode", sys_noTC ? "TC" : "CUPS");
+        LOG(MOD_SYS|WARNING, "Station in NO-%s mode", sys_noTC ? "TC" : "CUPS");  // 记录站点无TC或无CUPS模式信息
     }
     int seed;
-    sys_seed((u1_t*)&seed, sizeof(seed));
-    srand(seed);
+    sys_seed((u1_t*)&seed, sizeof(seed));  // 生成随机种子
+    srand(seed);  // 初始化随机数生成器
 }
 
 
@@ -1052,257 +1056,292 @@ static void startupMaster (tmr_t* tmr) {
 }
 
 
-// Fwd decl
+// 前向声明
 static void startupDaemon (tmr_t* tmr);
 
-// We poll here because using SIGCHLD would require pselect in aio which
-// is less portable (e.g. LWIP on FreeRTOS). Polling is not a problem because
-// we also would like to slow down restart to avoid blocking the system in a tight restart cycle.
+// 我们在这里使用轮询而不是SIGCHLD信号，因为使用SIGCHLD会需要在aio中使用pselect，
+// 这在某些平台上不太便携（例如FreeRTOS上的LWIP）。轮询不是问题，
+// 因为我们还希望减慢重启速度，以避免在紧密的重启循环中阻塞系统。
 static void waitForWorker (tmr_t* tmr) {
-    int wstatus;
-    pid_t wpid = waitpid(workerPid, &wstatus, WNOHANG);
+    int wstatus;  // 用于存储子进程状态
+    pid_t wpid = waitpid(workerPid, &wstatus, WNOHANG);  // 非阻塞方式等待工作进程
     //NOT-NEEDED sys_inState(SYSIS_STATION_DEAD);
-    if( wpid < 0 || wpid == workerPid ) {
-        LOG(MOD_SYS|ERROR, "DAEMON: Station process %d died (exit code 0x%X)", workerPid, wstatus);
-        workerPid = 0;
-        startupDaemon(&startupTmr);
+    if( wpid < 0 || wpid == workerPid ) {  // 如果等待失败或工作进程已死亡
+        LOG(MOD_SYS|ERROR, "DAEMON: Station process %d died (exit code 0x%X)", workerPid, wstatus);  // 记录进程死亡日志
+        workerPid = 0;  // 清除工作进程ID
+        startupDaemon(&startupTmr);  // 重新启动守护进程
     } else {
-        rt_setTimer(&startupTmr, rt_millis_ahead(500));
+        rt_setTimer(&startupTmr, rt_millis_ahead(500));  // 设置定时器，500毫秒后再次检查
     }
 }
 
 
+// 启动守护进程函数
 static void startupDaemon (tmr_t* tmr) {
-    int subprocPid;
-    // Respawn station worker process
-    sys_inState(SYSIS_STATION_DEAD);
-    sys_flushLog();
-    if( (subprocPid = fork()) == -1 )
-        rt_fatal("DAEMON: Failed to fork station: %s", strerror(errno));
-    if( subprocPid == 0 ) {
-        // Child
-        sys_iniLogging(&logfile, 1);
-        LOG(MOD_SYS|INFO, "DAEMON: Station process %d started...", getpid());
-        rt_yieldTo(&startupTmr, startupMaster);
+    int subprocPid;  // 子进程ID
+    // 重新生成station工作进程
+    sys_inState(SYSIS_STATION_DEAD);  // 设置系统状态为站点死亡
+    sys_flushLog();  // 刷新日志
+    if( (subprocPid = fork()) == -1 )  // 创建子进程
+        rt_fatal("DAEMON: Failed to fork station: %s", strerror(errno));  // 如果fork失败，打印错误并退出
+    if( subprocPid == 0 ) {  // 子进程代码
+        // 子进程
+        sys_iniLogging(&logfile, 1);  // 初始化日志系统（允许stdio捕获）
+        LOG(MOD_SYS|INFO, "DAEMON: Station process %d started...", getpid());  // 记录子进程启动日志
+        rt_yieldTo(&startupTmr, startupMaster);  // 将控制权交给主进程启动函数
     } else {
-        // Parent
-        workerPid = subprocPid;
-        rt_yieldTo(&startupTmr, waitForWorker);
+        // 父进程代码
+        workerPid = subprocPid;  // 保存工作进程ID
+        rt_yieldTo(&startupTmr, waitForWorker);  // 将控制权交给工作进程等待函数
     }
 }
 
 
+// 主函数入口
 int sys_main (int argc, char** argv) {
-    // Because we log even before rt_ini()...
+    // 在rt_ini()之前就开始记录日志，所以需要设置UTC偏移
     rt_utcOffset = sys_utc() - rt_getTime();
 
-    signal(SIGHUP,  SIG_IGN);
-    signal(SIGINT,  handle_signal);
-    signal(SIGTERM, handle_signal);
+    // 设置信号处理
+    signal(SIGHUP,  SIG_IGN);    // 忽略SIGHUP信号
+    signal(SIGINT,  handle_signal);  // 处理SIGINT信号
+    signal(SIGTERM, handle_signal);  // 处理SIGTERM信号
 
-    char cwd[MAX_FILEPATH_LEN];
-    if( getcwd(cwd, sizeof(cwd)) != NULL )
-        fs_chdir(cwd);
+    // 获取并设置当前工作目录
+    char cwd[MAX_FILEPATH_LEN];  // 定义存储当前工作目录的字符数组
+    if( getcwd(cwd, sizeof(cwd)) != NULL )  // 获取当前工作目录
+        fs_chdir(cwd);  // 设置当前工作目录
 
-    s2conf_ini();
-    logfile.size = LOGFILE_SIZE;
-    logfile.rotate = LOGFILE_ROTATE;
-    setHomeDir(".", "builtin");
-    // setWebDir("./web", "builtin");
-    setTempDir(access("/var/tmp", W_OK) < 0 ? "/tmp" : "/var/tmp", "builtin");
-    prefixEuiSrc = rt_strdup("builtin");
-    findDefaultEui();
+    // 初始化配置和日志设置
+    s2conf_ini();  // 初始化s2配置
+    logfile.size = LOGFILE_SIZE;  // 设置日志文件大小
+    logfile.rotate = LOGFILE_ROTATE;  // 设置日志文件轮换
+    setHomeDir(".", "builtin");  // 设置主目录
+    // setWebDir("./web", "builtin");  // 设置Web目录（注释掉）
+    setTempDir(access("/var/tmp", W_OK) < 0 ? "/tmp" : "/var/tmp", "builtin");  // 设置临时目录
+    prefixEuiSrc = rt_strdup("builtin");  // 复制字符串"builtin"到prefixEuiSrc
+    findDefaultEui();  // 查找默认EUI
 
-    opts = rt_malloc(struct opts);
-    int err = argp_parse (&argp, argc, argv, 0, NULL, NULL);
-    if( err != 0 )
-        return err;
+    // 解析命令行参数
+    opts = rt_malloc(struct opts);  // 分配内存给opts结构体
+    int err = argp_parse (&argp, argc, argv, 0, NULL, NULL);  // 解析命令行参数
+    if( err != 0 )  // 如果解析出错
+        return err;  // 返回错误码
 
 #if defined(CFG_ral_master_slave)
-    int slave_rdfd = -1, slave_wrfd = -1;
-    if( opts->slaveMode ) {
-        str_t const* sn = SLAVE_ENVS;
-        while( *sn ) {
-            str_t sv = getenv(*sn);
-            if( sv == NULL )
-                rt_fatal("Missing mandatory env var: %s", *sn);
-            str_t sve = sv;
-            sL_t v = rt_readDec(&sve);
-            if( v < 0 )
-                rt_fatal("Env var %s has illegal value: %s", *sn, sv);
-            switch(sn[0][6]) {
-            case 'I': log_setSlaveIdx(sys_slaveIdx = v); break;
-            case 'R': slave_rdfd = v; break;
-            case 'W': slave_wrfd = v; break;
+    // 主从模式相关设置
+    int slave_rdfd = -1, slave_wrfd = -1;  // 初始化从模式读写文件描述符
+    if( opts->slaveMode ) {  // 如果是从模式
+        str_t const* sn = SLAVE_ENVS;  // 获取从模式环境变量
+        while( *sn ) {  // 遍历环境变量
+            str_t sv = getenv(*sn);  // 获取环境变量值
+            if( sv == NULL )  // 如果环境变量不存在
+                rt_fatal("Missing mandatory env var: %s", *sn);  // 打印错误信息并退出
+            str_t sve = sv;  // 复制环境变量值
+            sL_t v = rt_readDec(&sve);  // 读取十进制值
+            if( v < 0 )  // 如果值非法
+                rt_fatal("Env var %s has illegal value: %s", *sn, sv);  // 打印错误信息并退出
+            switch(sn[0][6]) {  // 根据环境变量名的第七个字符进行判断
+            case 'I':  // 如果是从模式索引
+                log_setSlaveIdx(sys_slaveIdx = v);  // 设置从模式索引
+                break;
+            case 'R':  // 如果是读文件描述符
+                slave_rdfd = v;  // 设置从模式读文件描述符
+                break;
+            case 'W':  // 如果是写文件描述符
+                slave_wrfd = v;  // 设置从模式写文件描述符
+                break;
             }
-            sn++;
+            sn++;  // 移动到下一个环境变量
         }
     }
-    if( sys_slaveExec == NULL ) {
-        sys_slaveExec = rt_strdup("/proc/self/exe -S");
+    if( sys_slaveExec == NULL ) {  // 如果从模式执行命令为空
+        sys_slaveExec = rt_strdup("/proc/self/exe -S");  // 设置默认从模式执行命令
     }
 #endif // defined(CFG_ral_master_slave)
 
+    // 处理EUI前缀设置
     {
-        str_t prefix = opts->euiprefix;
-        str_t source = "--eui-prefix";
-        if( prefix == NULL ) {
-            source = "STATION_EUIPREFIX";
-            prefix = getenv(source);
+        str_t prefix = opts->euiprefix;  // 获取EUI前缀
+        str_t source = "--eui-prefix";  // 设置EUI前缀来源
+        if( prefix == NULL ) {  // 如果EUI前缀为空
+            source = "STATION_EUIPREFIX";  // 设置EUI前缀来源为环境变量
+            prefix = getenv(source);  // 获取环境变量值
         } else {
-            setenv("STATION_EUIPREFIX", prefix, 1);
+            setenv("STATION_EUIPREFIX", prefix, 1);  // 设置环境变量
         }
-        if( prefix ) {
-            str_t err = parseEui(prefix, 0, & prefixEUI, 0);
-            if( err )
-                rt_fatal("%s has illegal EUI value: %s", source, err);
-            free((void*)prefixEuiSrc);
-            prefixEuiSrc = rt_strdup(source);
-        }
-    }
-    if( opts->tempDir ) {
-        if( !setTempDir(opts->tempDir, "--temp") )
-            return 1;
-        setenv("STATION_TEMPDIR", opts->tempDir, 1);
-    } else {
-        str_t source = "STATION_TEMPDIR";
-        str_t v = getenv(source);
-        if( v && !setTempDir(v, source) )
-            return 1;
-    }
-
-    if( opts->homeDir ) {
-        if( !setHomeDir(opts->homeDir, "--home") )
-            return 1;
-        setenv("STATION_HOME", opts->homeDir, 1);
-    } else {
-        str_t source = "STATION_HOME";
-        str_t v = getenv(source);
-        if( v && !setHomeDir(v, source) )
-            return 1;
-    }
-
-    if( !parseStationConf() )
-        return 1;
-    if( opts->params ) {
-        s2conf_printAll();
-    }
-
-    if( opts->logFile ) {
-        if( !setLogFile(opts->logFile, "--log-file") )
-            return 1;
-        setenv("STATION_LOGFILE", opts->logFile, 1);
-    } else {
-        str_t source = "STATION_LOGFILE";
-        str_t v = getenv(source);
-        if( v && !setLogFile(v, source) )
-            return 1;
-    }
-    if( opts->radioInit ) {
-        radioInitSrc = "--radio-init";
-        free((char*)radioInit);
-        radioInit = rt_strdup(opts->radioInit);
-        setenv("STATION_RADIOINIT", radioInit, 1);
-    } else {
-        str_t s = "STATION_RADIOINIT";
-        str_t v = getenv(s);
-        if( v ) {
-            radioInitSrc = s;
-            free((char*)radioInit);
-            radioInit = rt_strdup(v);
+        if( prefix ) {  // 如果EUI前缀存在
+            str_t err = parseEui(prefix, 0, & prefixEUI, 0);  // 解析EUI前缀
+            if( err )  // 如果解析出错
+                rt_fatal("%s has illegal EUI value: %s", source, err);  // 打印错误信息并退出
+            free((void*)prefixEuiSrc);  // 释放prefixEuiSrc内存
+            prefixEuiSrc = rt_strdup(source);  // 复制EUI前缀来源
         }
     }
-    if( opts->logLevel ) {
-        if( !setLogLevel(opts->logLevel, "--log-level") )
-            return 1;
-        setenv("STATION_LOGLEVEL", opts->logLevel, 1);
+
+    // 设置临时目录
+    if( opts->tempDir ) {  // 如果指定了临时目录
+        if( !setTempDir(opts->tempDir, "--temp") )  // 设置临时目录
+            return 1;  // 如果设置失败，返回1
+        setenv("STATION_TEMPDIR", opts->tempDir, 1);  // 设置环境变量
     } else {
-        str_t source = "STATION_LOGLEVEL";
-        str_t v = getenv(source);
-        if( v && !setLogLevel(v, source) )
-            return 1;
+        str_t source = "STATION_TEMPDIR";  // 设置临时目录来源
+        str_t v = getenv(source);  // 获取环境变量值
+        if( v && !setTempDir(v, source) )  // 如果环境变量存在且设置失败
+            return 1;  // 返回1
     }
+
+    // 设置主目录
+    if( opts->homeDir ) {  // 如果指定了主目录
+        if( !setHomeDir(opts->homeDir, "--home") )  // 设置主目录
+            return 1;  // 如果设置失败，返回1
+        setenv("STATION_HOME", opts->homeDir, 1);  // 设置环境变量
+    } else {
+        str_t source = "STATION_HOME";  // 设置主目录来源
+        str_t v = getenv(source);  // 获取环境变量值
+        if( v && !setHomeDir(v, source) )  // 如果环境变量存在且设置失败
+            return 1;  // 返回1
+    }
+
+    // 解析站点配置
+    if( !parseStationConf() )  // 如果解析站点配置失败
+        return 1;  // 返回1
+    if( opts->params ) {  // 如果指定了参数
+        s2conf_printAll();  // 打印所有配置
+    }
+
+    // 设置日志文件
+    if( opts->logFile ) {  // 如果指定了日志文件
+        if( !setLogFile(opts->logFile, "--log-file") )  // 设置日志文件
+            return 1;  // 如果设置失败，返回1
+        setenv("STATION_LOGFILE", opts->logFile, 1);  // 设置环境变量
+    } else {
+        str_t source = "STATION_LOGFILE";  // 设置日志文件来源
+        str_t v = getenv(source);  // 获取环境变量值
+        if( v && !setLogFile(v, source) )  // 如果环境变量存在且设置失败
+            return 1;  // 返回1
+    }
+
+    // 设置无线电初始化
+    if( opts->radioInit ) {  // 如果指定了无线电初始化
+        radioInitSrc = "--radio-init";  // 设置无线电初始化来源
+        free((char*)radioInit);  // 释放radioInit内存
+        radioInit = rt_strdup(opts->radioInit);  // 复制无线电初始化
+        setenv("STATION_RADIOINIT", radioInit, 1);  // 设置环境变量
+    } else {
+        str_t s = "STATION_RADIOINIT";  // 设置无线电初始化来源
+        str_t v = getenv(s);  // 获取环境变量值
+        if( v ) {  // 如果环境变量存在
+            radioInitSrc = s;  // 设置无线电初始化来源
+            free((char*)radioInit);  // 释放radioInit内存
+            radioInit = rt_strdup(v);  // 复制无线电初始化
+        }
+    }
+
+    // 设置日志级别
+    if( opts->logLevel ) {  // 如果指定了日志级别
+        if( !setLogLevel(opts->logLevel, "--log-level") )  // 设置日志级别
+            return 1;  // 如果设置失败，返回1
+        setenv("STATION_LOGLEVEL", opts->logLevel, 1);  // 设置环境变量
+    } else {
+        str_t source = "STATION_LOGLEVEL";  // 设置日志级别来源
+        str_t v = getenv(source);  // 获取环境变量值
+        if( v && !setLogLevel(v, source) )  // 如果环境变量存在且设置失败
+            return 1;  // 返回1
+    }
+
+    // 设置TLS调试级别
     {
-        str_t source = "STATION_TLSDBG";
-        str_t v = getenv(source);
-        if( v && (v[0]&0xF0) == '0' )
-            tls_dbgLevel = v[0] - '0';
+        str_t source = "STATION_TLSDBG";  // 设置TLS调试级别来源
+        str_t v = getenv(source);  // 获取环境变量值
+        if( v && (v[0]&0xF0) == '0' )  // 如果环境变量存在且符合条件
+            tls_dbgLevel = v[0] - '0';  // 设置TLS调试级别
     }
 
-    if( opts->kill ) {
-        if( opts->daemon || opts->force ) {
-            fprintf(stderr, "Option -k is incompatible with -d/-f\n");
-            return 1;
+    // 处理kill选项
+    if( opts->kill ) {  // 如果指定了kill选项
+        if( opts->daemon || opts->force ) {  // 如果同时指定了守护进程或强制选项
+            fprintf(stderr, "Option -k is incompatible with -d/-f\n");  // 打印错误信息
+            return 1;  // 返回1
         }
-        killOldPid();
-        return 0;
+        killOldPid();  // 杀死旧进程
+        return 0;  // 返回0
     }
-    sys_noTC = opts->notc;
+    sys_noTC = opts->notc;  // 设置不使用TC选项
 
-    int daemon = opts->daemon;
-    int force = opts->force;
-    free(opts);
-    opts = NULL;
+    // 保存守护进程和强制选项
+    int daemon = opts->daemon;  // 获取守护进程选项
+    int force = opts->force;  // 获取强制选项
+    free(opts);  // 释放opts内存
+    opts = NULL;  // 将opts置为空
 
 #if defined(CFG_ral_master_slave)
-    int isSlave = (sys_slaveIdx >= 0);
+    int isSlave = (sys_slaveIdx >= 0);  // 判断是否为从模式
 #else
-    int isSlave = 0;
+    int isSlave = 0;  // 默认不是从模式
 #endif
 
-    if( !isSlave ) {
-        if( !force ) {
-            int pid = readPid();
-            if( pid && kill(pid, 0) == 0 ) {
-                // Some process is still running
-                fprintf(stderr, "A station with pid=%d is still running (use -f to take over)\n", pid);
-                exit(EXIT_NOP);
+    // 检查进程是否已经在运行
+    if( !isSlave ) {  // 如果不是从模式
+        if( !force ) {  // 如果没有强制选项
+            int pid = readPid();  // 读取进程ID
+            if( pid && kill(pid, 0) == 0 ) {  // 如果进程存在
+                fprintf(stderr, "A station with pid=%d is still running (use -f to take over)\n", pid);  // 打印错误信息
+                exit(EXIT_NOP);  // 退出程序
             }
         } else {
-            killOldPid();
+            killOldPid();  // 杀死旧进程
         }
     }
 
-    setupConfigFilenames();
-    checkRollForward();
-    if( !checkUris() )
-        return 1;
+    // 设置配置文件名并检查
+    setupConfigFilenames();  // 设置配置文件名
+    checkRollForward();  // 检查版本前滚
+    if( !checkUris() )  // 检查URI
+        return 1;  // 如果检查失败，返回1
 
-    if( daemon ) {
-        if( logfile.path == NULL ) {
-            setLogFile("~temp/station.log", "builtin");  // change default stderr to a file
-            setenv("STATION_TEMPDIR", tempDir, 1);
+    // 处理守护进程模式（-d选项）
+    if( daemon ) {  // 如果是守护进程模式
+        // 设置守护进程的默认日志文件
+        if( logfile.path == NULL ) {  // 如果用户没有指定日志文件路径
+            setLogFile("~temp/station.log", "builtin");  // 将默认的stderr输出改为文件输出
+            setenv("STATION_TEMPDIR", tempDir, 1);  // 设置临时目录环境变量
         }
-        int subprocPid;
-        if( (subprocPid = fork()) == -1 )
-            rt_fatal("Daemonize fork failed: %s\n", strerror(errno));
-        if( subprocPid != 0 ) {
-            fprintf(stderr, "Daemon pid=%d running...\n", subprocPid);
-            daemonPid = subprocPid;
-            writePid();
-            exit(0); // parent exit
+        int subprocPid;  // 定义子进程ID变量
+        // 第一次fork：创建守护进程
+        if( (subprocPid = fork()) == -1 )  // 创建子进程，如果失败返回-1
+            rt_fatal("Daemonize fork failed: %s\n", strerror(errno));  // 如果fork失败，打印错误信息并退出
+        if( subprocPid != 0 ) {  // 如果是父进程（fork返回子进程PID）
+            // 父进程代码块：打印守护进程信息后退出
+            fprintf(stderr, "Daemon pid=%d running...\n", subprocPid);  // 打印守护进程ID信息
+            daemonPid = subprocPid;  // 保存守护进程ID到全局变量
+            writePid();  // 将守护进程ID写入PID文件
+            exit(0);  // 父进程完成任务后退出，让子进程继续运行
         }
-        // child is the daemon process
-        daemonPid = getpid();
-        setsid();
+        // 子进程代码块：成为守护进程
+        daemonPid = getpid();  // 获取当前进程ID（现在是守护进程）
+        setsid();  // 创建新的会话，脱离控制终端，成为会话领导者
     }
 
-    aio_ini();
-    sys_iniLogging(&logfile, !isSlave && !daemon);
-    sys_ini();
-    rt_ini();
-    ts_iniTimesync();
+    // 初始化各个子系统
+    aio_ini();  // 初始化异步IO
+    sys_iniLogging(&logfile, !isSlave && !daemon);  // 初始化日志系统
+    sys_ini();  // 初始化系统
+    rt_ini();  // 初始化运行时
+    ts_iniTimesync();  // 初始化时间同步
 
 #if defined(CFG_ral_master_slave)
-    if( isSlave ) {
-        sys_startupSlave(slave_rdfd, slave_wrfd);
-        // NOT REACHED
-        assert(0);
+    // 如果是从模式，启动从进程
+    if( isSlave ) {  // 如果是从模式
+        sys_startupSlave(slave_rdfd, slave_wrfd);  // 启动从进程
+        // 不会到达这里
+        assert(0);  // 断言失败
     }
 #endif // defined(CFG_ral_master_slave)
 
-    rt_yieldTo(&startupTmr, daemon ? startupDaemon : startupMaster);
-    aio_loop();
-    // NOT REACHED
-    assert(0);
+    // 启动主循环
+    rt_yieldTo(&startupTmr, daemon ? startupDaemon : startupMaster);  // 根据模式启动相应的主循环
+    aio_loop();  // 进入异步IO循环
+    // 不会到达这里
+    assert(0);  // 断言失败
 }

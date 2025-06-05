@@ -1,0 +1,166 @@
+flowchart TB
+    %% Platform Layer
+    subgraph "Platform Layer" 
+        direction TB
+        SysLinux["Platform Abstraction (sys_linux.c/h)"]:::plat
+        SysLogLinux["Linux Logging Integration (sys_log.c)"]:::plat
+        SysFIFO["FIFO & Remote Shell (cmdfifo.c, rmtsh.c)"]:::plat
+        WebLinux["Web Interface (web_linux.c)"]:::plat
+    end
+
+    %% Station Core
+    subgraph "Station Core" 
+        direction TB
+        StationMain["Entry Point & Daemon Control (station_main.c)"]:::core
+        ConfigMgr["Configuration Manager (s2conf.c/h)"]:::core
+        ParamStore["Parameter Storage FS (fs.c/h)"]:::core
+        LoggingCore["Core Logging Interface (log.c, sys.c)"]:::core
+        TimeSync["Time Synchronization (timesync.c/h)"]:::core
+        SelfTests["Self-Test Suite (selftests.c/h)"]:::core
+    end
+
+    %% Radio Abstraction Layer
+    subgraph "Radio Abstraction Layer" 
+        direction TB
+        RALGeneric["Generic API (ral.c/h)"]:::ral
+        RALLGW["Semtech Glue v1.x (ral_lgw.c)"]:::ral
+        RALLGW2["Semtech Glue v2.x (ral_lgw2.c)"]:::ral
+        RALMaster["Master/Slave (ral_master.c, ral_slave.c)"]:::ral
+        RALDriver["libloragw/Corecell Drivers"]:::ral
+    end
+
+    %% Network & Protocol Stack
+    subgraph "Network & Protocol" 
+        direction TB
+        TLSLayer["TLS Layer (tls.c/h)"]:::net
+        TCHandler["TC Protocol Handler (tc.c/h)"]:::net
+        CUPSHandler["CUPS Protocol Handler (cups.c/h)"]:::net
+        HTTPServer["HTTP/HTTPS Server (httpd.h, web.c/h)"]:::net
+        JSON["JSON Handling (uj.c/h)"]:::net
+    end
+
+    %% External Services
+    subgraph "External Services"
+        direction TB
+        Concentrator["Concentrator Hardware (SPI/USB)"]:::ext
+        LNS["LNS (TC over WebSocket/TLS)"]:::ext
+        CUPSServer["CUPS Server (HTTPS/TLS)"]:::ext
+    end
+
+    %% Simulation & Examples
+    subgraph "Examples & Simulation"
+        direction TB
+        Simulation["Simulation Env (examples/simulation/)"]:::infra
+        Station2PKFwd["Station2Pkfwd Bridge"]:::infra
+    end
+
+    %% Build & Test Infrastructure
+    subgraph "Build & Test Infra"
+        direction TB
+        BuildSystem["Makefiles, setup.gmk, Dockerfile"]:::infra
+        CI["CI Workflow & Tests (regr-tests/)"]:::infra
+    end
+
+    %% Connections
+    StationMain -->|orchestrates| ConfigMgr
+    StationMain -->|orchestrates| ParamStore
+    StationMain -->|orchestrates| LoggingCore
+    StationMain -->|orchestrates| TimeSync
+    StationMain -->|orchestrates| SelfTests
+    StationMain -->|uses| RALGeneric
+    StationMain -->|uses| TLSLayer
+
+    %% Platform to Core
+    SysLinux -->|provides threads/timers/sockets| StationMain
+    SysLogLinux -->|integrates logging| LoggingCore
+    SysFIFO -->|provides remote shell| StationMain
+    WebLinux -->|provides web API| HTTPServer
+
+    %% RAL to Platform
+    RALGeneric -->|calls| RALLGW
+    RALGeneric -->|calls| RALLGW2
+    RALGeneric -->|calls| RALMaster
+    RALMaster -->|uses| SysLinux
+    RALGeneric -->|drives| Concentrator
+    RALDriver -->|driver libs| RALLGW
+    RALDriver -->|driver libs| RALLGW2
+
+    %% Network flows
+    StationMain -->|sends/receives| TCHandler
+    StationMain -->|requests config| CUPSHandler
+    TCHandler -->|over WebSocket/TLS| LNS
+    CUPSHandler -->|over HTTPS/TLS| CUPSServer
+    HTTPServer -->|serves| Simulation
+    TLSLayer -->|wraps| TCHandler
+    TLSLayer -->|wraps| CUPSHandler
+
+    %% JSON usage
+    TCHandler -->|parses/serializes| JSON
+    CUPSHandler -->|parses/serializes| JSON
+    HTTPServer -->|parses/serializes| JSON
+
+    %% Simulation & Bridge
+    Simulation -->|injects frames| RALGeneric
+    Simulation -->|emulates servers| LNS
+    Station2PKFwd -->|bridges| TCHandler
+    Station2PKFwd -->|connects to| LNS
+
+    %% Build & CI
+    BuildSystem -->|builds| StationMain
+    CI -->|tests| StationMain
+    CI -->|runs| Simulation
+
+    %% Click Events
+    click StationMain "https://github.com/lorabasics/basicstation/blob/master/src-linux/station_main.c"
+    click ConfigMgr "https://github.com/lorabasics/basicstation/blob/master/src/s2conf.c"
+    click ConfigMgr "https://github.com/lorabasics/basicstation/blob/master/src/s2conf.h"
+    click ParamStore "https://github.com/lorabasics/basicstation/blob/master/src/fs.c"
+    click ParamStore "https://github.com/lorabasics/basicstation/blob/master/src/fs.h"
+    click LoggingCore "https://github.com/lorabasics/basicstation/blob/master/src/log.c"
+    click LoggingCore "https://github.com/lorabasics/basicstation/blob/master/src/sys.c"
+    click SysLogLinux "https://github.com/lorabasics/basicstation/blob/master/src-linux/sys_log.c"
+    click TimeSync "https://github.com/lorabasics/basicstation/blob/master/src/timesync.c"
+    click TimeSync "https://github.com/lorabasics/basicstation/blob/master/src/timesync.h"
+    click SelfTests "https://github.com/lorabasics/basicstation/blob/master/src/selftests.c"
+    click SelfTests "https://github.com/lorabasics/basicstation/blob/master/src/selftests.h"
+    click RALGeneric "https://github.com/lorabasics/basicstation/blob/master/src/ral.c"
+    click RALGeneric "https://github.com/lorabasics/basicstation/blob/master/src/ral.h"
+    click RALLGW "https://github.com/lorabasics/basicstation/blob/master/src/ral_lgw.c"
+    click RALLGW2 "https://github.com/lorabasics/basicstation/blob/master/src/ral_lgw2.c"
+    click RALMaster "https://github.com/lorabasics/basicstation/blob/master/src-linux/ral_master.c"
+    click RALMaster "https://github.com/lorabasics/basicstation/blob/master/src-linux/ral_slave.c"
+    click RALDriver "https://github.com/lorabasics/basicstation/tree/master/deps/lgw/"
+    click RALDriver "https://github.com/lorabasics/basicstation/tree/master/deps/lgw1302/"
+    click TLSLayer "https://github.com/lorabasics/basicstation/blob/master/src/tls.c"
+    click TLSLayer "https://github.com/lorabasics/basicstation/blob/master/src/tls.h"
+    click TCHandler "https://github.com/lorabasics/basicstation/blob/master/src/tc.c"
+    click TCHandler "https://github.com/lorabasics/basicstation/blob/master/src/tc.h"
+    click CUPSHandler "https://github.com/lorabasics/basicstation/blob/master/src/cups.c"
+    click CUPSHandler "https://github.com/lorabasics/basicstation/blob/master/src/cups.h"
+    click HTTPServer "https://github.com/lorabasics/basicstation/blob/master/src/httpd.h"
+    click HTTPServer "https://github.com/lorabasics/basicstation/blob/master/src/http.h"
+    click HTTPServer "https://github.com/lorabasics/basicstation/blob/master/src/web.c"
+    click HTTPServer "https://github.com/lorabasics/basicstation/blob/master/src/web.h"
+    click JSON "https://github.com/lorabasics/basicstation/blob/master/src/uj.c"
+    click JSON "https://github.com/lorabasics/basicstation/blob/master/src/uj.h"
+    click SysLinux "https://github.com/lorabasics/basicstation/blob/master/src-linux/sys_linux.c"
+    click SysLinux "https://github.com/lorabasics/basicstation/blob/master/src-linux/sys_linux.h"
+    click SysFIFO "https://github.com/lorabasics/basicstation/blob/master/src-linux/cmdfifo.c"
+    click SysFIFO "https://github.com/lorabasics/basicstation/blob/master/src-linux/commands.c"
+    click SysFIFO "https://github.com/lorabasics/basicstation/blob/master/src-linux/rmtsh.c"
+    click WebLinux "https://github.com/lorabasics/basicstation/blob/master/src-linux/web_linux.c"
+    click Simulation "https://github.com/lorabasics/basicstation/tree/master/examples/simulation/"
+    click Station2PKFwd "https://github.com/lorabasics/basicstation/tree/master/examples/station2pkfwd/"
+    click BuildSystem "https://github.com/lorabasics/basicstation/tree/master/makefile"
+    click BuildSystem "https://github.com/lorabasics/basicstation/blob/master/setup.gmk"
+    click BuildSystem "https://github.com/lorabasics/basicstation/tree/master/Dockerfile"
+    click CI "https://github.com/lorabasics/basicstation/tree/master/regr-tests/"
+    click CI "https://github.com/lorabasics/basicstation/blob/master/.github/workflows/regr-tests.yml"
+
+    %% Styles
+    classDef core fill:#cfe2f3,stroke:#2f6f9f,color:#0a2f5a;
+    classDef ral fill:#d9ead3,stroke:#6a994e,color:#264d23;
+    classDef net fill:#fce5cd,stroke:#bf7530,color:#7a3519;
+    classDef plat fill:#e2f0d9,stroke:#5a7d3c,color:#2e471c;
+    classDef ext fill:#f4cccc,stroke:#cc4a3b,color:#7f1c1c;
+    classDef infra fill:#d9d2e9,stroke:#5a4e85,color:#2e1a4e;
