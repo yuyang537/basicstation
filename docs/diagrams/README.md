@@ -1,83 +1,126 @@
-# Basic Station 架构图文档
+# LoRa Basics™ Station 代码理解文档
 
-本目录包含Basic Station项目的各种架构图和流程图，用于帮助理解系统的设计和工作原理。
+## 项目概述
 
-## 架构图列表
+LoRa Basics Station是一个完整的LoRaWAN网关实现，支持LoRaWAN Classes A、B、C，具有统一的无线电抽象层，支持多种集中器参考设计，并提供强大的后端协议支持。
 
-### 1. 进程架构图 (`process-architecture.mmd`)
-展示Basic Station的进程结构和组件间的交互关系，包括：
-- **进程管理层**：主进程、守护进程控制器、进程监控
-- **核心工作进程**：Station核心、配置管理、无线电管理
-- **网络通信进程**：TC协议、CUPS协议、TLS处理、HTTP服务
-- **平台服务进程**：Linux系统服务、日志管理、命令FIFO、远程Shell
-- **无线电抽象层进程**：RAL主从进程、驱动程序、时间同步
-- **外部接口**：SPI接口、LNS连接、CUPS服务器连接
+## 项目架构概览
 
-### 2. 数据流架构图 (`data-flow-architecture.mmd`)
-展示LoRa数据包在系统中的完整处理流程，包括：
-- **系统启动和配置阶段**：配置加载、远程配置获取
-- **无线电初始化阶段**：硬件初始化、接口配置
-- **网络连接建立阶段**：LNS连接、安全握手
-- **上行数据流**：从LoRa设备到网络服务器的数据处理
-- **下行数据流**：从网络服务器到LoRa设备的数据传输
-- **配置动态更新**：运行时配置更新流程
-- **错误处理和恢复**：异常情况的处理机制
+本项目采用模块化设计，主要分为以下几个层次：
 
-### 3. 守护进程启动流程图 (`startup-daemon-flow.mmd`)
-详细展示startupDaemon函数的完整执行流程，包括：
-- **启动模式检查**：普通模式vs守护进程模式的判断
-- **双层fork架构**：第一次fork创建守护进程，第二次fork创建工作进程
-- **进程监控循环**：工作进程状态监控和自动重启机制
-- **系统初始化**：各子系统的初始化顺序和依赖关系
+1. **平台抽象层** - 提供Linux平台特定的功能实现
+2. **核心系统层** - 系统初始化、配置管理、文件系统操作
+3. **无线电抽象层(RAL)** - 统一的无线电硬件抽象接口
+4. **网络协议层** - TC协议、CUPS协议、TLS、HTTP等网络通信
+5. **应用层** - S2E引擎、JSON处理、时间同步等
 
-### 4. 守护进程架构图 (`startup-daemon-architecture.mmd`)
-展示守护进程的完整架构和各组件的交互关系，包括：
-- **系统启动流程**：不同启动模式的处理逻辑
-- **守护进程初始化**：会话独立和子系统初始化
-- **进程监控循环**：500ms轮询检查和重启机制
-- **PID管理功能**：进程ID文件的管理和旧进程清理
+## 图表索引
 
-### 5. 守护进程功能特点图 (`startup-daemon-features.mmd`)
-总结startupDaemon的核心功能和技术特点，包括：
-- **自动重启**：工作进程异常时的自动重启能力
-- **进程隔离**：双层fork实现的进程隔离架构
-- **会话独立**：通过setsid()实现的终端脱离
-- **资源管理**：PID文件和进程生命周期管理
-- **错误恢复**：完整的监控、日志和错误处理机制
+### 核心架构图
 
-## 如何查看架构图
+- [system-startup-flow.mmd](system/system-startup-flow.mmd) - 系统启动流程，展示从main函数到各模块初始化的完整过程
+- [module-interaction-architecture.mmd](system/module-interaction-architecture.mmd) - 模块交互架构图，展示各核心模块之间的调用关系和数据流
+- [configuration-management-flow.mmd](system/configuration-management-flow.mmd) - 配置管理流程，展示配置文件的加载、解析和应用过程
 
-这些架构图使用Mermaid格式编写，可以通过以下方式查看：
+### 网络通信模块
 
-1. **GitHub直接查看**：在GitHub仓库中直接打开`.mmd`文件
-2. **Mermaid Live Editor**：访问 https://mermaid.live/ 并粘贴文件内容
-3. **VS Code插件**：安装Mermaid Preview插件
-4. **本地渲染**：使用mermaid-cli工具转换为图片格式
+- [tc-protocol-flow.mmd](network/tc-protocol-flow.mmd) - TC协议处理流程，详细展示与LNS服务器的WebSocket通信机制
+- [cups-protocol-flow.mmd](network/cups-protocol-flow.mmd) - CUPS配置更新协议流程，展示配置更新的完整过程
+- [tls-connection-architecture.mmd](network/tls-connection-architecture.mmd) - TLS连接架构，展示安全连接的建立和管理
 
-## 文件组织
+### 无线电处理模块
+
+- [ral-abstraction-architecture.mmd](radio/ral-abstraction-architecture.mmd) - RAL抽象层架构，展示无线电硬件的统一抽象
+- [s2e-engine-flow.mmd](radio/s2e-engine-flow.mmd) - S2E引擎处理流程，展示站点到引擎的数据处理机制
+- [channel-allocation-flow.mmd](radio/channel-allocation-flow.mmd) - 信道分配流程，展示信道资源的分配算法
+
+### 数据处理模块
+
+- [json-processing-flow.mmd](data/json-processing-flow.mmd) - JSON处理流程，展示JSON编解码的详细实现
+- [time-synchronization-flow.mmd](data/time-synchronization-flow.mmd) - 时间同步机制，展示GPS和网络时间同步的实现
+
+## 技术特点分析
+
+### 1. 核心启动流程
+- **入口点**: `src-linux/station_main.c` 简单的main函数，调用`sys_main`
+- **系统初始化**: `src-linux/sys_linux.c` 负责Linux平台的具体初始化
+- **配置管理**: `src/s2conf.c` 统一的参数配置系统
+
+### 2. 关键业务流程
+- **TC协议**: 与LNS服务器的主要通信协议，使用WebSocket over TLS
+- **CUPS协议**: 配置更新协议，用于远程配置管理
+- **S2E引擎**: 核心的数据处理引擎，处理上下行数据
+
+### 3. 错误处理机制
+- **配置回滚**: 支持配置文件的备份和恢复
+- **连接重试**: 网络连接失败时的重试机制
+- **资源清理**: 完善的资源释放和清理机制
+
+### 4. 平台适配特性
+- **抽象接口**: 通过抽象层支持不同硬件平台
+- **可移植性**: 最少的外部依赖，易于移植
+- **模块化设计**: 清晰的模块边界，便于维护和扩展
+
+## 关键数据结构
+
+### 配置管理
+- `conf_param`: 配置参数结构，支持多种数据类型的统一管理
+- `s2ctx_t`: S2E上下文，包含所有运行时状态信息
+
+### 网络通信
+- `tc_t`: TC协议上下文，管理与LNS的连接状态
+- `cups_t`: CUPS协议上下文，管理配置更新过程
+- `conn_t`: 通用连接结构，支持TLS和普通TCP连接
+
+### 无线电处理
+- `txjob_t`: 发送任务结构，包含完整的发送参数
+- `rxjob_t`: 接收任务结构，包含接收到的数据和元信息
+- `challoc_t`: 信道分配结构，管理信道资源
+
+## 设计原理
+
+### 异步事件驱动
+- 使用定时器和事件回调机制处理异步操作
+- 非阻塞的网络I/O处理
+- 状态机驱动的协议处理
+
+### 内存管理
+- 统一的内存分配接口(`rt_malloc`, `rt_free`)
+- 动态缓冲区管理(`dbuf_t`)
+- 自动的资源清理机制
+
+### 错误处理
+- 分层的错误处理机制
+- 详细的日志记录系统
+- 优雅的降级处理
+
+## 常见问题和注意事项
+
+### 配置文件管理
+- 配置文件支持多个版本(REG/BAK/BOOT)
+- 原子性的配置更新操作
+- 配置验证和回滚机制
+
+### 网络连接处理
+- 连接失败时的指数退避算法
+- 自动重连机制
+- 证书验证和安全连接
+
+### 无线电操作
+- 严格的时序要求处理
+- 信道冲突检测和避免
+- 功耗优化考虑
+
+## 文件组织结构
 
 ```
 docs/diagrams/
-├── README.md                      # 本说明文件
-├── process-architecture.mmd       # 进程架构图
-├── data-flow-architecture.mmd     # 数据流架构图
-├── startup-daemon-flow.mmd        # 守护进程启动流程图
-├── startup-daemon-architecture.mmd # 守护进程架构图
-└── startup-daemon-features.mmd    # 守护进程功能特点图
+├── system/              # 系统级架构图
+├── network/             # 网络通信图
+├── radio/               # 无线电处理图
+├── data/                # 数据处理图
+├── README.md            # 本文档
+└── system-summary.md    # 系统详细分析
 ```
 
-## 贡献指南
-
-如需添加新的架构图或更新现有图表：
-
-1. 所有流程图应使用Mermaid格式
-2. 文件命名使用小写字母和连字符
-3. 图表应包含适当的中文注释
-4. 更新本README文件以包含新图表的说明
-
-## 相关文档
-
-- [Basic Station官方文档](https://doc.sm.tc/station)
-- [项目根目录的架构图](../../sturture.mmd)
-- [源代码目录](../../src/)
-- [Linux平台代码](../../src-linux/) 
+这些图表使用Mermaid语法编写，包含具体的函数名和参数信息，便于代码追踪和调试。每个图表都包含中文注释，解释各个步骤的业务含义和技术实现细节。 

@@ -1,0 +1,166 @@
+```mermaid
+flowchart TB
+    %% LoRa Basics Station 模块交互架构图
+    %% 展示各核心模块之间的调用关系和数据流向
+    
+    %% 入口层
+    subgraph "程序入口层"
+        MainEntry["main() - src-linux/station_main.c<br/>程序入口点，简单转发到sys_main"]
+        SysMain["sys_main() - src-linux/sys_linux.c<br/>系统主函数，负责完整的系统初始化"]
+    end
+    
+    %% 平台抽象层
+    subgraph "平台抽象层 - Linux特定实现"
+        SysLinux["sys_linux.c/h<br/>Linux系统调用封装<br/>• 文件操作、网络套接字<br/>• 进程管理、信号处理<br/>• 时间和随机数服务"]
+        
+        SysLog["sys_log.c<br/>Linux日志集成<br/>• syslog接口<br/>• 日志轮转管理<br/>• 实时日志输出"]
+        
+        CmdFIFO["cmdfifo.c & rmtsh.c<br/>命令FIFO和远程Shell<br/>• 命令管道接口<br/>• 远程调试功能<br/>• 运行时控制"]
+        
+        WebLinux["web_linux.c<br/>Web接口Linux实现<br/>• HTTP服务器<br/>• 状态页面<br/>• REST API接口"]
+        
+        GPSLinux["gps.c<br/>GPS设备驱动<br/>• GPS时间同步<br/>• 位置信息获取<br/>• 串口通信"]
+        
+        RALMaster["ral_master.c & ral_slave.c<br/>RAL主从进程架构<br/>• 进程间通信<br/>• 无线电硬件隔离<br/>• 故障恢复"]
+    end
+    
+    %% 核心系统层
+    subgraph "核心系统层"
+        SysCore["sys.c/h<br/>系统核心服务<br/>• 文件系统抽象<br/>• 配置文件管理<br/>• EUI管理<br/>• 凭证处理"]
+        
+        S2Conf["s2conf.c/h<br/>配置参数系统<br/>• 参数定义和解析<br/>• 类型转换和验证<br/>• 环境变量集成<br/>• 参数持久化"]
+        
+        FS["fs.c/h<br/>文件系统抽象<br/>• 跨平台文件操作<br/>• 配置文件事务<br/>• 备份和恢复<br/>• 目录管理"]
+        
+        LogCore["log.c<br/>日志系统核心<br/>• 日志级别管理<br/>• 模块化日志<br/>• 缓冲和格式化<br/>• 输出路由"]
+        
+        RT["rt.c/h<br/>运行时工具库<br/>• 内存管理<br/>• 字符串处理<br/>• 时间转换<br/>• CRC计算"]
+    end
+    
+    %% 网络协议层
+    subgraph "网络协议层"
+        TLS["tls.c/h<br/>TLS安全层<br/>• mbedTLS集成<br/>• 证书管理<br/>• 加密连接<br/>• 身份验证"]
+        
+        NET["net.c/h<br/>网络基础层<br/>• 套接字管理<br/>• 连接状态机<br/>• 异步I/O<br/>• 超时处理"]
+        
+        TC["tc.c/h<br/>TC协议处理<br/>• WebSocket over TLS<br/>• LNS连接管理<br/>• 消息路由<br/>• 重连机制"]
+        
+        CUPS["cups.c/h<br/>CUPS配置协议<br/>• HTTPS客户端<br/>• 配置更新<br/>• 数字签名验证<br/>• 固件更新"]
+        
+        HTTP["web.c/h & httpd.h<br/>HTTP服务器<br/>• HTTP请求处理<br/>• 静态文件服务<br/>• API接口<br/>• 状态报告"]
+    end
+    
+    %% 数据处理层
+    subgraph "数据处理层"
+        UJ["uj.c/h<br/>JSON处理引擎<br/>• 高性能解析<br/>• 流式编码<br/>• 错误处理<br/>• 内存优化"]
+        
+        S2E["s2e.c/h<br/>S2E通信引擎<br/>• 上下行数据处理<br/>• 协议转换<br/>• 队列管理<br/>• 功率控制"]
+        
+        TimeSync["timesync.c/h<br/>时间同步服务<br/>• GPS时间同步<br/>• 网络时间协议<br/>• 时间校准<br/>• 精度管理"]
+        
+        XQ["xq.c/h<br/>传输队列管理<br/>• 任务队列<br/>• 优先级调度<br/>• 资源分配<br/>• 流量控制"]
+    end
+    
+    %% 无线电抽象层
+    subgraph "无线电抽象层(RAL)"
+        RALCore["ral.c/h<br/>RAL核心接口<br/>• 硬件抽象<br/>• 统一API<br/>• 信道分配<br/>• 参数验证"]
+        
+        RALLGW["ral_lgw.c<br/>SX130x v1.x驱动胶水<br/>• libloragw集成<br/>• 寄存器配置<br/>• 中断处理<br/>• 错误恢复"]
+        
+        RALLGW2["ral_lgw2.c<br/>SX130x v2.x驱动胶水<br/>• 新版本硬件支持<br/>• 性能优化<br/>• 扩展功能<br/>• 兼容性管理"]
+        
+        SX130XConf["sx130xconf.c & sx1301v2conf.c<br/>硬件配置管理<br/>• 无线电参数设置<br/>• 频率计划<br/>• 功率配置<br/>• 校准参数"]
+    end
+    
+    %% 自测试和工具
+    subgraph "自测试和工具"
+        SelfTests["selftests.c/h<br/>自测试套件<br/>• 功能验证<br/>• 硬件测试<br/>• 性能基准<br/>• 故障诊断"]
+        
+        FlashSim["flashsim.c<br/>Flash模拟器<br/>• 存储仿真<br/>• 测试环境<br/>• 开发支持<br/>• 调试工具"]
+        
+        LGWSim["lgwsim.c<br/>LoRaGW模拟器<br/>• 硬件仿真<br/>• 协议测试<br/>• 集成测试<br/>• 回归测试"]
+    end
+    
+    %% 外部接口
+    subgraph "外部接口和硬件"
+        HardwareRadio["SPI/USB无线电硬件<br/>• SX1301/SX1302集中器<br/>• 天线阵列<br/>• GPS模块<br/>• 状态LED"]
+        
+        LNSServer["LNS服务器<br/>• LoRaWAN网络服务器<br/>• 设备管理<br/>• 数据路由<br/>• 网络策略"]
+        
+        CUPSServer["CUPS服务器<br/>• 配置管理服务器<br/>• 远程配置<br/>• 固件分发<br/>• 证书管理"]
+        
+        DeviceNodes["LoRa设备<br/>• 终端设备<br/>• 传感器节点<br/>• 执行器<br/>• 网关设备"]
+    end
+    
+    %% 主要数据流连接
+    MainEntry -->|调用| SysMain
+    SysMain -->|初始化| SysCore
+    SysMain -->|启动| S2Conf
+    SysMain -->|配置| LogCore
+    
+    %% 系统核心交互
+    SysCore -->|文件操作| FS
+    SysCore -->|日志输出| LogCore
+    SysCore -->|参数管理| S2Conf
+    SysCore -->|平台服务| SysLinux
+    
+    %% 网络协议交互
+    TC -->|安全连接| TLS
+    TC -->|网络层| NET
+    TC -->|数据处理| S2E
+    TC -->|JSON编码| UJ
+    
+    CUPS -->|安全连接| TLS
+    CUPS -->|HTTP客户端| NET
+    CUPS -->|配置更新| SysCore
+    CUPS -->|JSON解析| UJ
+    
+    %% 数据处理流
+    S2E -->|上行数据| TC
+    S2E -->|JSON格式化| UJ
+    S2E -->|无线电操作| RALCore
+    S2E -->|时间同步| TimeSync
+    S2E -->|队列管理| XQ
+    
+    %% 无线电抽象层交互
+    RALCore -->|硬件v1.x| RALLGW
+    RALCore -->|硬件v2.x| RALLGW2
+    RALCore -->|配置管理| SX130XConf
+    RALCore -->|主从架构| RALMaster
+    
+    %% 平台服务交互
+    SysLinux -->|系统调用| LogCore
+    SysLinux -->|文件系统| FS
+    SysLinux -->|网络操作| NET
+    SysLinux -->|进程管理| RALMaster
+    
+    %% 外部连接
+    TC -.->|WebSocket/TLS| LNSServer
+    CUPS -.->|HTTPS| CUPSServer
+    RALCore -.->|SPI/USB| HardwareRadio
+    HardwareRadio -.->|LoRa RF| DeviceNodes
+    
+    %% 监控和调试接口
+    CmdFIFO -->|命令执行| SysCore
+    WebLinux -->|状态查询| S2E
+    SelfTests -->|功能测试| RALCore
+    
+    %% 样式定义
+    classDef entry fill:#e3f2fd,stroke:#0277bd,stroke-width:2px,color:#000
+    classDef platform fill:#f1f8e9,stroke:#33691e,stroke-width:2px,color:#000
+    classDef core fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
+    classDef network fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#000
+    classDef data fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000
+    classDef radio fill:#e0f2f1,stroke:#00695c,stroke-width:2px,color:#000
+    classDef test fill:#fff8e1,stroke:#ff8f00,stroke-width:2px,color:#000
+    classDef external fill:#efebe9,stroke:#5d4037,stroke-width:2px,color:#000
+    
+    %% 应用样式
+    class MainEntry,SysMain entry
+    class SysLinux,SysLog,CmdFIFO,WebLinux,GPSLinux,RALMaster platform
+    class SysCore,S2Conf,FS,LogCore,RT core
+    class TLS,NET,TC,CUPS,HTTP network
+    class UJ,S2E,TimeSync,XQ data
+    class RALCore,RALLGW,RALLGW2,SX130XConf radio
+    class SelfTests,FlashSim,LGWSim test
+    class HardwareRadio,LNSServer,CUPSServer,DeviceNodes external

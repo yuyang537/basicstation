@@ -1,0 +1,173 @@
+```mermaid
+sequenceDiagram
+    participant App as 应用层(S2E)
+    participant TC as TC协议引擎
+    participant WS as WebSocket层
+    participant TLS as TLS安全层
+    participant Net as 网络层
+    participant LNS as LNS服务器
+    
+    Note over TC,LNS: TC协议连接建立阶段
+    
+    %% 初始化阶段
+    App->>+TC: sys_startTC() - 启动TC引擎
+    TC->>TC: tc_ini() - 初始化TC结构体
+    Note right of TC: 设置状态为TC_INI<br/>分配接收/发送缓冲区<br/>初始化超时定时器
+    
+    TC->>TC: tc_start() - 开始连接流程
+    TC->>TC: sys_uri(SYS_CRED_TC, tc->credset) - 获取TC URI
+    
+    alt 没有TC URI配置
+        TC->>App: tc_done(TC_ERR_NOURI) - 无URI错误
+    else 有TC URI配置
+        TC->>TC: uri_checkHostPortUri() - 验证URI格式
+        
+        alt URI格式错误
+            TC->>App: tc_done(TC_ERR_FAILED) - 格式错误
+        else URI格式正确
+            TC->>TLS: conn_setup_tls() - 设置TLS连接
+            TC->>WS: ws_connect() - 建立WebSocket连接
+            TC->>TC: 设置状态为TC_INFOS_REQ_PEND
+            
+            %% INFOS阶段 - 获取MUXS URI
+            Note over TC,LNS: Phase 1: 向INFOS端点请求MUXS URI
+            
+            WS->>TLS: 建立TLS握手
+            TLS->>Net: TCP连接建立
+            Net->>LNS: 连接到/router-info端点
+            
+            LNS-->>Net: TCP连接确认
+            Net-->>TLS: 连接建立
+            TLS-->>WS: TLS握手完成
+            WS-->>TC: WSEV_CONNECTED事件
+            
+            TC->>TC: tc_info_request() - 处理INFOS连接
+            TC->>WS: 发送INFOS请求
+            Note right of TC: JSON格式：<br/>{"router": "0123456789ABCDEF"}
+            
+            WS->>LNS: 发送INFOS请求
+            LNS-->>WS: 返回MUXS信息
+            WS-->>TC: WSEV_TEXTRCVD事件
+            
+            TC->>TC: 解析INFOS响应
+            Note right of TC: 解析JSON获取：<br/>• router ID<br/>• muxs ID<br/>• muxs URI
+            
+            alt INFOS返回错误
+                TC->>TC: 设置状态为TC_ERR_REJECTED
+                TC->>WS: ws_close() - 关闭连接
+            else INFOS成功
+                TC->>TC: 保存muxsuri到tc->muxsuri
+                TC->>TC: 设置状态为TC_INFOS_GOT_URI
+                TC->>WS: ws_close() - 关闭INFOS连接
+            end
+        end
+    end
+    
+    %% MUXS连接阶段
+    Note over TC,LNS: Phase 2: 连接到MUXS进行数据传输
+    
+    WS-->>TC: WSEV_CLOSED事件
+    TC->>TC: tc_connect_muxs() - 连接MUXS
+    TC->>TC: 解析muxsuri获取主机/端口/路径
+    TC->>TLS: conn_setup_tls() - 设置MUXS TLS连接
+    TC->>WS: ws_connect() - 连接MUXS WebSocket
+    TC->>TC: 设置状态为TC_MUXS_REQ_PEND
+    
+    WS->>TLS: 建立MUXS TLS连接
+    TLS->>Net: 建立到MUXS的TCP连接
+    Net->>LNS: 连接到MUXS端点
+    
+    LNS-->>Net: MUXS TCP连接确认
+    Net-->>TLS: MUXS连接建立
+    TLS-->>WS: MUXS TLS握手完成
+    WS-->>TC: WSEV_CONNECTED事件
+    
+    TC->>TC: tc_muxs_connection() - 处理MUXS连接
+    TC->>TC: 设置状态为TC_MUXS_CONNECTED
+    TC->>WS: 发送版本信息
+    Note right of TC: JSON格式：<br/>{"msgtype": "version",<br/> "station": "2.0.6",<br/> "firmware": "1.0.0",<br/> "protocol": 2}
+    
+    %% 数据传输阶段
+    Note over TC,LNS: Phase 3: 正常数据传输
+    
+    loop 数据传输循环
+        %% 上行数据传输
+        App->>TC: s2e_flushRxjobs() - 发送上行数据
+        TC->>TC: 格式化上行JSON消息
+        Note right of TC: 包含：频率、数据速率、<br/>RSSI、SNR、时间戳等
+        TC->>WS: ws_sendText() - 发送上行数据
+        WS->>LNS: 传输上行数据到LNS
+        
+        %% 下行数据接收
+        LNS-->>WS: 发送下行数据/配置
+        WS-->>TC: WSEV_TEXTRCVD事件
+        TC->>TC: s2e_onMsg() - 处理下行消息
+        
+        alt 收到下行数据帧
+            TC->>App: 转发下行数据到S2E引擎
+            App->>App: 调度下行传输
+        else 收到配置更新
+            TC->>App: 应用新的配置参数
+        else 收到时间同步
+            TC->>App: 更新系统时间基准
+        end
+        
+        %% 二进制数据传输（固件更新等）
+        alt 收到二进制数据
+            LNS-->>WS: 发送二进制数据
+            WS-->>TC: WSEV_BINARYRCVD事件
+            TC->>TC: s2e_onBinary() - 处理二进制数据
+            TC->>App: 转发到应用层处理
+        end
+        
+        %% 发送确认
+        TC->>WS: ws_sendText() - 发送确认消息
+        WS->>LNS: 传输确认到LNS
+    end
+    
+    %% 错误处理和重连
+    Note over TC,LNS: 错误处理和重连机制
+    
+    alt 连接意外断开
+        WS-->>TC: WSEV_CLOSED事件
+        TC->>TC: 设置状态为TC_ERR_CLOSED
+        TC->>TC: tc_continue() - 重连处理
+        
+        alt 重试次数 <= 4 且为MUXS连接错误
+            TC->>TC: 计算退避时间 (1 << retries)秒
+            TC->>TC: 设置状态为TC_MUXS_BACKOFF
+            Note right of TC: 指数退避：1s, 2s, 4s, 8s
+            
+            TC->>TC: rt_setTimer() - 设置重连定时器
+            TC->>TC: tc_timeout() - 定时器到期
+            TC->>TC: tc_connect_muxs() - 重新连接MUXS
+        else 重试次数过多或INFOS错误
+            TC->>TC: 清除muxsuri缓存
+            TC->>TC: 设置状态为TC_INFOS_BACKOFF
+            TC->>TC: 计算退避时间 (min(retries, 6) * 10)秒
+            Note right of TC: 线性退避：10s, 20s, ..., 60s
+        end
+    else 协议错误或被拒绝
+        TC->>TC: 设置状态为TC_ERR_REJECTED
+        TC->>App: sys_triggerCUPS() - 触发CUPS更新配置
+        Note right of TC: 配置可能已过期，<br/>需要通过CUPS获取新配置
+    else 超时错误
+        TC->>TC: tc_timeout() - 超时处理
+        TC->>TC: 设置状态为TC_ERR_TIMEOUT
+        TC->>TC: tc_continue() - 重连处理
+    end
+    
+    %% 正常关闭
+    Note over TC,LNS: 正常关闭流程
+    
+    App->>TC: sys_stopTC() - 停止TC引擎
+    TC->>WS: ws_close() - 关闭WebSocket连接
+    WS->>TLS: 关闭TLS连接
+    TLS->>Net: 关闭TCP连接
+    Net->>LNS: 断开连接
+    
+    TC->>TC: tc_free() - 清理资源
+    TC->>App: 连接已关闭
+    
+    %% 状态说明
+    Note over TC: TC引擎状态转换：<br/>TC_INI → TC_INFOS_REQ_PEND → TC_INFOS_GOT_URI<br/>→ TC_MUXS_REQ_PEND → TC_MUXS_CONNECTED<br/>错误状态：TC_ERR_*<br/>退避状态：TC_*_BACKOFF

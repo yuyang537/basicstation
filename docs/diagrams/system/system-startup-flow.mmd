@@ -1,0 +1,125 @@
+```mermaid
+flowchart TD
+    %% 系统启动流程图 - 从main函数到各模块初始化的完整过程
+    
+    Start([程序启动]) --> Main["main() - src-linux/station_main.c:35"]
+    
+    %% 主函数调用系统主函数
+    Main --> SysMain["sys_main() - src-linux/sys_linux.c"]
+    Main -.->|"简单转发调用"| MainNote["注释：Linux平台的main函数<br/>只是简单调用sys_main()"]
+    
+    %% 参数解析阶段
+    SysMain --> ArgParse["argp_parse() - 命令行参数解析"]
+    ArgParse --> CheckParams["检查启动参数"]
+    CheckParams --> ParamOptions{参数检查}
+    
+    %% 不同的参数处理分支
+    ParamOptions -->|"--help"| ShowHelp["显示帮助信息并退出"]
+    ParamOptions -->|"--version"| ShowVersion["显示版本信息并退出"]  
+    ParamOptions -->|"--params"| ShowParams["显示当前参数设置并退出"]
+    ParamOptions -->|"--kill"| KillOld["杀死现有进程并退出"]
+    ParamOptions -->|"正常启动"| InitPhase["进入初始化阶段"]
+    
+    %% 系统初始化阶段
+    InitPhase --> DirSetup["设置工作目录"]
+    DirSetup --> HomeDirCheck["setHomeDir() - 检查主目录路径"]
+    HomeDirCheck --> TempDirCheck["setTempDir() - 检查临时目录路径"]
+    TempDirCheck --> WebDirCheck["setWebDir() - 检查Web目录路径"]
+    
+    %% 配置文件系统初始化
+    WebDirCheck --> ConfigSetup["配置系统初始化"]
+    ConfigSetup --> ConfigFilenames["setupConfigFilenames() - 设置配置文件路径"]
+    ConfigFilenames --> RollForward["checkRollForward() - 检查前向恢复"]
+    RollForward --> S2ConfInit["s2conf_ini() - 配置参数初始化"]
+    S2ConfInit --> URICheck["checkUris() - 验证服务器URI配置"]
+    
+    %% EUI（设备标识）设置
+    URICheck --> EUISetup["EUI设置"]
+    EUISetup --> ProtoEUI["设置协议EUI - 从网络接口或参数"]
+    ProtoEUI --> PrefixEUI["设置EUI前缀 - 用于MAC地址扩展"]
+    PrefixEUI --> FindDefaultEUI["findDefaultEui() - 自动发现默认EUI"]
+    
+    %% 守护进程模式检查
+    FindDefaultEUI --> DaemonCheck{是否守护进程模式?}
+    DaemonCheck -->|"是(-d参数)"| DaemonMode["startupDaemon() - 守护进程启动"]
+    DaemonCheck -->|"否"| DirectMode["直接模式启动"]
+    
+    %% 守护进程启动流程
+    DaemonMode --> PIDCheck["检查现有PID文件"]
+    PIDCheck --> KillOldPID["killOldPid() - 清理旧进程"]
+    KillOldPID --> FirstFork["第一次fork() - 创建守护进程"]
+    FirstFork --> SetsidCall["setsid() - 创建新会话"]
+    SetsidCall --> SecondFork["第二次fork() - 创建工作进程"]
+    SecondFork --> WritePID["writePid() - 写入PID文件"]
+    WritePID --> MonitorLoop["监控循环 - 500ms轮询检查工作进程"]
+    
+    %% 直接模式或工作进程启动
+    DirectMode --> WorkerInit["工作进程初始化"]
+    SecondFork --> WorkerInit
+    
+    %% 工作进程核心初始化
+    WorkerInit --> SignalSetup["信号处理设置 - handle_signal()"]
+    SignalSetup --> SysIni["sys_ini() - 系统核心初始化"]
+    
+    %% 系统核心初始化详细步骤
+    SysIni --> LogInit["日志系统初始化"]
+    LogInit --> VersionLog["记录版本信息 - Station/Package/mbedTLS版本"]
+    VersionLog --> EUILog["记录EUI信息 - proto/prefix/station EUI"]
+    EUILog --> DirLog["记录目录信息 - home/temp目录路径"]
+    DirLog --> SeedInit["sys_seed() - 随机数种子初始化"]
+    SeedInit --> RandInit["srand() - 随机数生成器初始化"]
+    
+    %% 子系统初始化
+    RandInit --> SubsystemInit["子系统初始化"]
+    SubsystemInit --> RALInit["ral_ini() - 无线电抽象层初始化"]
+    RALInit --> TimesyncInit["ts_iniTimesync() - 时间同步初始化"]
+    TimesyncInit --> NetInit["net_ini() - 网络层初始化"]
+    NetInit --> CUPSInit["sys_iniCUPS() - CUPS协议初始化"]
+    CUPSInit --> TCInit["sys_iniTC() - TC协议初始化"]
+    
+    %% 协议启动
+    TCInit --> ProtocolStart["协议启动阶段"]
+    ProtocolStart --> CUPSTrigger["sys_triggerCUPS() - 触发CUPS连接"]
+    CUPSTrigger --> SelfTest["selftests() - 可选的自测试"]
+    SelfTest --> EventLoop["aio_loop() - 主事件循环"]
+    
+    %% 主事件循环
+    EventLoop --> LoopNote["注释：进入异步I/O事件循环<br/>处理网络连接、定时器、信号等事件"]
+    EventLoop --> Running["系统运行中..."]
+    
+    %% 监控循环处理
+    MonitorLoop --> WorkerCheck{工作进程状态检查}
+    WorkerCheck -->|"正常运行"| SleepWait["usleep(500000) - 等待500ms"]
+    SleepWait --> MonitorLoop
+    WorkerCheck -->|"进程异常退出"| RestartWorker["重启工作进程"]
+    RestartWorker --> SecondFork
+    
+    %% 错误处理
+    ParamOptions -->|"参数错误"| ErrorExit["错误退出"]
+    URICheck -->|"URI配置错误"| ErrorExit
+    EventLoop -->|"致命错误"| ErrorExit
+    ErrorExit --> End([程序结束])
+    
+    %% 正常退出
+    Running -->|"信号中断或正常退出"| Cleanup["资源清理"]
+    Cleanup --> End
+    ShowHelp --> End
+    ShowVersion --> End
+    ShowParams --> End
+    KillOld --> End
+    
+    %% 样式定义
+    classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#000
+    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef decision fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    classDef subsystem fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef daemon fill:#fce4ec,stroke:#880e4f,stroke-width:2px,color:#000
+    classDef note fill:#fff9c4,stroke:#f57f17,stroke-width:1px,color:#000
+    
+    %% 应用样式
+    class Start,End startEnd
+    class Main,SysMain,ArgParse,CheckParams,InitPhase,DirSetup,ConfigSetup,EUISetup,WorkerInit,SignalSetup process
+    class ParamOptions,DaemonCheck,WorkerCheck decision
+    class RALInit,TimesyncInit,NetInit,CUPSInit,TCInit,ProtocolStart subsystem
+    class DaemonMode,PIDCheck,FirstFork,SetsidCall,SecondFork,MonitorLoop,RestartWorker daemon
+    class MainNote,LoopNote note

@@ -1,0 +1,211 @@
+```mermaid
+sequenceDiagram
+    participant Timer as 定时器系统
+    participant CUPS as CUPS引擎
+    participant HTTP as HTTP客户端
+    participant TLS as TLS安全层
+    participant Net as 网络层
+    participant Server as CUPS服务器
+    participant SysCore as 系统核心
+    participant TC as TC协议引擎
+    
+    Note over Timer,Server: CUPS配置更新协议流程
+    
+    %% 定时触发或手动触发
+    Timer->>+CUPS: cups_ondone() - 定时器触发或sys_triggerCUPS()
+    Note right of Timer: 触发条件：<br/>• 定时同步 (CUPS_OKSYNC_INTV)<br/>• TC连接失败<br/>• 手动触发
+    
+    CUPS->>CUPS: cups_ini() - 初始化CUPS结构体
+    Note right of CUPS: 分配HTTP缓冲区<br/>初始化超时定时器<br/>设置状态为CUPS_INI
+    
+    CUPS->>CUPS: cups_start() - 开始CUPS会话
+    CUPS->>SysCore: sys_uri(SYS_CRED_CUPS, cups_credset) - 获取CUPS URI
+    
+    alt 没有CUPS URI配置
+        CUPS->>CUPS: cups_done(CUPS_ERR_NOURI) - 无URI错误
+        CUPS->>Timer: 设置下次检查定时器
+    else 有CUPS URI配置
+        CUPS->>CUPS: uri_checkHostPortUri() - 验证URI格式
+        
+        alt URI格式错误  
+            CUPS->>CUPS: cups_done(CUPS_ERR_FAILED) - 格式错误
+        else URI格式正确
+            CUPS->>TLS: conn_setup_tls() - 设置TLS连接
+            CUPS->>HTTP: http_connect() - 建立HTTP连接
+            CUPS->>CUPS: 设置状态为CUPS_HTTP_REQ_PEND
+            
+            %% HTTP连接建立
+            HTTP->>TLS: 建立TLS握手
+            TLS->>Net: TCP连接建立
+            Net->>Server: 连接到CUPS服务器
+            
+            Server-->>Net: TCP连接确认
+            Net-->>TLS: 连接建立
+            TLS-->>HTTP: TLS握手完成
+            HTTP-->>CUPS: HTTPEV_CONNECTED事件
+            
+            %% 发送update-info请求
+            CUPS->>CUPS: cups_update_info() - 处理HTTP连接
+            CUPS->>HTTP: 构建POST请求到/update-info
+            
+            Note right of CUPS: 请求体包含：<br/>• router EUI<br/>• 当前URI配置<br/>• 凭证CRC<br/>• 站点版本信息<br/>• 签名密钥CRC列表
+            
+            CUPS->>HTTP: http_request() - 发送HTTP请求
+            HTTP->>Server: 发送update-info请求
+            
+            %% 接收和解析响应
+            Server-->>HTTP: 返回配置更新数据
+            HTTP-->>CUPS: HTTPEV_RESPONSE事件
+            
+            CUPS->>CUPS: 解析HTTP响应状态
+            
+            alt HTTP状态码 != 200
+                CUPS->>CUPS: 设置状态为CUPS_ERR_REJECTED
+                CUPS->>HTTP: http_close() - 关闭连接
+            else HTTP状态码 = 200
+                Note over CUPS,Server: 开始解析分段数据
+                
+                %% 备份当前配置
+                CUPS->>SysCore: sys_backupConfig(SYS_CRED_CUPS) - 备份配置
+                CUPS->>SysCore: sys_resetConfigUpdate() - 重置配置更新
+                
+                %% 解析URI段
+                CUPS->>CUPS: 读取CUPS URI长度和内容
+                CUPS->>CUPS: 读取TC URI长度和内容
+                
+                alt 有新的CUPS URI
+                    CUPS->>SysCore: sys_saveUri(SYS_CRED_CUPS, uri) - 保存CUPS URI
+                    CUPS->>CUPS: 设置uflags |= UPDATE_FLAG(CUPS_URI)
+                end
+                
+                alt 有新的TC URI
+                    CUPS->>SysCore: sys_saveUri(SYS_CRED_TC, uri) - 保存TC URI
+                    CUPS->>CUPS: 设置uflags |= UPDATE_FLAG(TC_URI)
+                end
+                
+                %% 解析凭证段
+                loop 处理所有数据段
+                    CUPS->>CUPS: 读取段长度(1/2/4字节)
+                    
+                    alt CUPS凭证段
+                        CUPS->>SysCore: sys_credStart(SYS_CRED_CUPS, segm_len)
+                        CUPS->>SysCore: sys_credWrite() - 写入凭证数据
+                        CUPS->>SysCore: sys_credComplete() - 完成凭证写入
+                        CUPS->>CUPS: 设置uflags |= UPDATE_FLAG(CUPS_CRED)
+                        
+                    else TC凭证段
+                        CUPS->>SysCore: sys_credStart(SYS_CRED_TC, segm_len)
+                        CUPS->>SysCore: sys_credWrite() - 写入凭证数据
+                        CUPS->>SysCore: sys_credComplete() - 完成凭证写入
+                        CUPS->>CUPS: 设置uflags |= UPDATE_FLAG(TC_CRED)
+                        
+                    else 固件签名段
+                        CUPS->>CUPS: 读取签名密钥CRC (4字节)
+                        CUPS->>CUPS: 读取ECDSA签名数据
+                        CUPS->>CUPS: 初始化SHA-512哈希计算
+                        CUPS->>CUPS: 设置uflags |= UPDATE_FLAG(SIGNATURE)
+                        
+                    else 固件更新段
+                        CUPS->>SysCore: sys_updateStart(segm_len) - 开始固件更新
+                        
+                        loop 读取固件数据
+                            CUPS->>SysCore: sys_updateWrite() - 写入固件数据
+                            
+                            alt 有签名验证
+                                CUPS->>CUPS: mbedtls_sha512_update() - 更新哈希
+                            end
+                        end
+                        
+                        CUPS->>CUPS: 设置uflags |= UPDATE_FLAG(UPDATE)
+                    end
+                end
+                
+                %% 完成数据接收
+                CUPS->>SysCore: sys_commitConfigUpdate() - 提交配置更新
+                CUPS->>CUPS: 设置状态为CUPS_DONE
+                CUPS->>HTTP: http_close() - 关闭HTTP连接
+            end
+        end
+    end
+    
+    %% 处理更新结果
+    HTTP-->>CUPS: HTTPEV_CLOSED事件
+    CUPS->>CUPS: cups_done() - 完成CUPS会话
+    
+    alt 固件更新处理
+        CUPS->>CUPS: 检查UPDATE_FLAG(UPDATE)
+        
+        alt 有数字签名
+            CUPS->>CUPS: mbedtls_sha512_finish() - 完成哈希计算
+            CUPS->>CUPS: cups_verifySig() - 验证ECDSA签名
+            
+            loop 遍历所有验证密钥
+                CUPS->>CUPS: sys_sigKey(keyid) - 获取验证密钥
+                CUPS->>CUPS: mbedtls_ecdsa_read_signature() - 验证签名
+            end
+            
+            alt 签名验证成功
+                CUPS->>SysCore: sys_runUpdate() - 执行固件更新
+                Note right of CUPS: 在后台进程中运行<br/>update.bin固件
+            else 签名验证失败
+                CUPS->>SysCore: sys_abortUpdate() - 中止更新
+                Note right of CUPS: 删除下载的固件文件<br/>记录验证失败日志
+            end
+            
+        else 无签名且无密钥文件
+            CUPS->>SysCore: sys_runUpdate() - 执行固件更新
+            Note right of CUPS: 开发模式：无签名验证
+            
+        else 无签名但有密钥文件
+            CUPS->>SysCore: sys_abortUpdate() - 中止更新
+            Note right of CUPS: 生产模式：要求签名验证
+        end
+    end
+    
+    %% TC/CUPS配置更新处理
+    alt TC配置更新
+        CUPS->>CUPS: 检查UPDATE_FLAG(TC_URI|TC_CRED)
+        CUPS->>TC: sys_stopTC() - 停止当前TC连接
+        Note right of CUPS: TC将在后续自动重启<br/>使用新的配置
+    end
+    
+    alt CUPS配置更新
+        CUPS->>CUPS: 检查UPDATE_FLAG(CUPS_URI|CUPS_CRED)
+        Note right of CUPS: 立即使用新配置<br/>重新连接CUPS服务器
+    end
+    
+    %% 错误处理和重试
+    alt CUPS会话失败
+        CUPS->>CUPS: cups_failCnt += 1 - 增加失败计数
+        
+        alt 失败次数 > FAIL_CNT_THRES(6) 或被拒绝
+            CUPS->>CUPS: cups_credset = (cups_credset+1) % 3
+            Note right of CUPS: 轮换配置集：<br/>REG → BAK → BOOT → REG
+        end
+        
+        CUPS->>Timer: 设置重试定时器 (CUPS_RESYNC_INTV)
+        Note right of Timer: 失败重试间隔：<br/>较短的重试间隔
+        
+    else CUPS会话成功
+        CUPS->>CUPS: cups_credset = SYS_CRED_REG - 重置为REG配置
+        CUPS->>CUPS: cups_failCnt = 0 - 清零失败计数
+        
+        alt 有配置更新
+            CUPS->>Timer: 设置快速重连定时器
+            Note right of Timer: 立即重连使用新配置
+        else 无配置更新
+            CUPS->>Timer: 设置正常同步定时器 (CUPS_OKSYNC_INTV)
+            Note right of Timer: 正常同步间隔：<br/>较长的检查间隔
+        end
+    end
+    
+    %% 清理和重启TC
+    CUPS->>CUPS: cups_free() - 清理CUPS资源
+    CUPS->>TC: sys_startTC() - 重启TC引擎
+    Note right of TC: 使用更新后的配置<br/>重新连接LNS服务器
+    
+    %% 定时器循环
+    Timer->>Timer: rt_setTimer() - 设置下次CUPS检查
+    Note over Timer: 根据成功/失败情况<br/>设置不同的检查间隔：<br/>• 成功：长间隔<br/>• 失败：短间隔<br/>• 配置更新：立即重连
+    
+    Note over CUPS: CUPS状态转换：<br/>CUPS_INI → CUPS_HTTP_REQ_PEND<br/>→ CUPS_FEED_* → CUPS_DONE<br/>错误状态：CUPS_ERR_*

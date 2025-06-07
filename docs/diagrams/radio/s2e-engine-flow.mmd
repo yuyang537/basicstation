@@ -1,0 +1,136 @@
+```mermaid
+flowchart TD
+    %% S2E引擎数据处理流程图
+    %% 展示上行和下行数据的完整处理机制
+    
+    subgraph "无线电硬件层"
+        RadioHW["SX130x无线电硬件<br/>• 天线接收LoRa信号<br/>• 基带信号处理<br/>• 时间戳标记<br/>• RSSI/SNR测量"]
+        
+        RALDriver["RAL驱动层<br/>• ral_lgw.c / ral_lgw2.c<br/>• 硬件寄存器操作<br/>• 中断处理<br/>• 数据缓冲区管理"]
+    end
+    
+    subgraph "S2E数据处理引擎"
+        S2ECore["S2E核心引擎 - s2e.c<br/>• 上下行数据协调<br/>• 协议转换<br/>• 队列管理<br/>• 时序控制"]
+        
+        RXQueue["接收队列 (RXQ)<br/>• rxq_ini() - 队列初始化<br/>• s2e_addRxjob() - 添加接收任务<br/>• 镜像帧检测和去重<br/>• FIFO缓冲区管理"]
+        
+        TXQueue["发送队列 (TXQ)<br/>• txq_ini() - 队列初始化<br/>• s2e_addTxjob() - 添加发送任务<br/>• 优先级调度<br/>• 时序冲突检测"]
+        
+        DCControl["占空比控制<br/>• EU868频段限制<br/>• 信道级占空比<br/>• 功率控制<br/>• LBT检测"]
+        
+        TimeSync["时间同步服务<br/>• ts_xtime2gpstime() - 时间转换<br/>• GPS时间校准<br/>• 网络时间同步<br/>• 精度管理"]
+    end
+    
+    subgraph "网络协议层"
+        TCProtocol["TC协议处理 - tc.c<br/>• WebSocket通信<br/>• JSON消息编解码<br/>• 连接状态管理<br/>• 错误重试机制"]
+        
+        JSONEngine["JSON处理引擎 - uj.c<br/>• uj_encode*() - 编码函数<br/>• uj_decode*() - 解码函数<br/>• 流式处理<br/>• 内存优化"]
+    end
+    
+    subgraph "外部系统"
+        LoRaDevices["LoRa终端设备<br/>• 传感器节点<br/>• 执行器设备<br/>• 移动设备<br/>• 固定设备"]
+        
+        LNSServer["LNS网络服务器<br/>• LoRaWAN网络服务器<br/>• 设备管理<br/>• 路由策略<br/>• 应用服务器接口"]
+    end
+    
+    %% 上行数据流处理
+    LoRaDevices -.->|"LoRa RF信号"| RadioHW
+    RadioHW -->|"数字化数据"| RALDriver
+    RALDriver -->|"ral_rx()"| S2ECore
+    
+    S2ECore -->|"接收帧处理"| RXProcess["上行帧处理流程"]
+    
+    RXProcess -->|"1. 创建rxjob"| RXJobCreate["s2e_addRxjob()<br/>• 分配rxjob结构<br/>• 复制接收数据<br/>• 设置时间戳和元数据<br/>• 计算RSSI/SNR"]
+    
+    RXJobCreate -->|"2. 镜像检测"| MirrorCheck{镜像帧检测}
+    MirrorCheck -->|"发现镜像帧"| MirrorDrop["丢弃质量较差的帧<br/>• 比较SNR和RSSI<br/>• 保留信号质量更好的帧<br/>• 记录镜像检测日志"]
+    MirrorCheck -->|"无镜像帧"| RXQueue
+    MirrorDrop --> RXQueue
+    
+    RXQueue -->|"3. 刷新队列"| FlushRX["s2e_flushRxjobs()<br/>• 遍历接收队列<br/>• 获取发送缓冲区<br/>• 解析LoRa帧结构"]
+    
+    FlushRX -->|"4. 帧解析"| FrameParse["s2e_parse_lora_frame()<br/>• 验证MIC校验<br/>• 解析帧头信息<br/>• JoinEUI过滤检查<br/>• 提取负载数据"]
+    
+    FrameParse -->|"解析成功"| JSONFormat["JSON格式化<br/>• uj_encOpen() - 开始JSON对象<br/>• 添加频率、DR、时间戳<br/>• 编码RSSI、SNR、rctx<br/>• Base64编码负载数据"]
+    FrameParse -->|"解析失败"| FrameDrop["丢弃无效帧<br/>• MIC校验失败<br/>• 格式错误<br/>• 过滤器拒绝"]
+    
+    JSONFormat -->|"5. 发送上行"| TCProtocol
+    TCProtocol -->|"WebSocket/TLS"| LNSServer
+    
+    %% 下行数据流处理
+    LNSServer -.->|"WebSocket/TLS"| TCProtocol
+    TCProtocol -->|"下行消息"| S2ECore
+    
+    S2ECore -->|"消息解析"| MsgParse["s2e_onMsg()<br/>• JSON消息解码<br/>• 消息类型识别<br/>• 参数验证和检查"]
+    
+    MsgParse -->|"dnframe"| DNFrame["handle_dnframe()<br/>• 解析下行帧参数<br/>• 验证频率和DR<br/>• 检查设备EUI<br/>• 设置传输时间"]
+    
+    MsgParse -->|"dnmsg"| DNMsg["handle_dnmsg()<br/>• 处理下行消息<br/>• 设备配置更新<br/>• 网络参数调整<br/>• 状态查询响应"]
+    
+    MsgParse -->|"dnsched"| DNSched["handle_dnsched()<br/>• 调度下行传输<br/>• Beacon发送<br/>• Class B ping slot<br/>• 多播传输"]
+    
+    MsgParse -->|"router_config"| RouterConfig["handle_router_config()<br/>• 更新区域参数<br/>• 信道配置<br/>• 数据速率设置<br/>• 功率限制"]
+    
+    MsgParse -->|"timesync"| TimeSyncMsg["handle_timesync()<br/>• 更新时间基准<br/>• GPS时间校准<br/>• 网络时间同步<br/>• 时钟漂移补偿"]
+    
+    %% 下行任务处理
+    DNFrame -->|"创建txjob"| TXJobCreate["s2e_addTxjob()<br/>• 分配txjob结构<br/>• 设置传输参数<br/>• 计算传输时间<br/>• 优先级设置"]
+    
+    DNMsg --> TXJobCreate
+    DNSched --> TXJobCreate
+    
+    TXJobCreate -->|"添加到队列"| TXQueue
+    TXQueue -->|"调度检查"| TXSchedule["传输调度器<br/>• s2e_nextTxAction()<br/>• 时序冲突检测<br/>• 占空比检查<br/>• 天线选择"]
+    
+    TXSchedule -->|"占空比检查"| DCCheck{占空比验证}
+    DCCheck -->|"EU868频段"| EU868Check["s2e_canTxEU868()<br/>• 检查频段占空比<br/>• 验证信道可用性<br/>• LBT检测"]
+    DCCheck -->|"其他区域"| PerChannelCheck["s2e_canTxPerChnlDC()<br/>• 信道级占空比<br/>• 功率限制检查<br/>• 时序验证"]
+    
+    EU868Check -->|"可以发送"| TXExecution
+    EU868Check -->|"占空比限制"| TXDelay["传输延迟<br/>• 计算等待时间<br/>• 设置重试定时器<br/>• 更新传输时间"]
+    
+    PerChannelCheck -->|"可以发送"| TXExecution
+    PerChannelCheck -->|"占空比限制"| TXDelay
+    
+    TXDelay -->|"定时器到期"| TXSchedule
+    
+    TXExecution["执行传输<br/>• updateAirtimeTxpow() - 计算空中时间和功率<br/>• ral_tx() - 调用RAL发送<br/>• update_DC() - 更新占空比<br/>• send_dntxed() - 发送确认"]
+    
+    TXExecution -->|"RAL发送"| RALDriver
+    RALDriver -->|"硬件发送"| RadioHW
+    RadioHW -.->|"LoRa RF信号"| LoRaDevices
+    
+    %% 错误处理和状态管理
+    TXExecution -->|"发送确认"| TXConfirm["dntxed消息<br/>• 发送时间戳<br/>• 传输参数<br/>• 天线信息<br/>• 功率信息"]
+    TXConfirm --> TCProtocol
+    
+    %% 时间同步集成
+    TimeSync -->|"时间基准"| S2ECore
+    S2ECore -->|"时间戳"| TimeSync
+    RouterConfig -->|"更新参数"| TimeSync
+    TimeSyncMsg -->|"校准时间"| TimeSync
+    
+    %% 配置更新流程
+    RouterConfig -->|"区域配置"| RegionUpdate["区域参数更新<br/>• s2ctx->region - 区域设置<br/>• s2ctx->dr_defs[] - 数据速率定义<br/>• s2ctx->min/max_freq - 频率范围<br/>• s2ctx->txpow - 发射功率"]
+    
+    RegionUpdate -->|"信道配置"| ChannelUpdate["信道配置更新<br/>• upch_insert() - 上行信道<br/>• dn_chnls[] - 下行信道<br/>• ral_challoc() - 信道分配<br/>• 信道验证"]
+    
+    ChannelUpdate -->|"应用配置"| ConfigApply["配置应用<br/>• 重新初始化RAL<br/>• 更新占空比设置<br/>• 重置队列状态<br/>• 更新时间同步"]
+    
+    %% 样式定义
+    classDef hardware fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#000
+    classDef s2ecore fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef network fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#000
+    classDef external fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px,color:#000
+    classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#000
+    classDef queue fill:#f1f8e9,stroke:#33691e,stroke-width:2px,color:#000
+    classDef decision fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
+    
+    %% 应用样式
+    class RadioHW,RALDriver hardware
+    class S2ECore,DCControl,TimeSync s2ecore
+    class TCProtocol,JSONEngine network
+    class LoRaDevices,LNSServer external
+    class RXProcess,FlushRX,FrameParse,JSONFormat,MsgParse,DNFrame,DNMsg,DNSched,RouterConfig,TimeSyncMsg,TXSchedule,TXExecution,TXConfirm,RegionUpdate,ChannelUpdate,ConfigApply process
+    class RXQueue,TXQueue,RXJobCreate,TXJobCreate queue
+    class MirrorCheck,DCCheck decision
