@@ -598,44 +598,58 @@ int ral_config (str_t hwspec, u4_t cca_region, char* json, int jsonlen, chdefl_t
 
 
 void ral_ini () {
+    // 查找是否应该启动从进程
     // Find out if we should start slaves
-    int slaveCnt = 0;
+    int slaveCnt = 0;  // 从进程计数器，初始化为0
     while(1) {
-        char cfname[64];
+        char cfname[64];  // 配置文件名缓冲区，最大64字符
+        // 格式化从进程配置文件名，格式为 "slave-N.conf"，N从0开始
         snprintf(cfname, sizeof(cfname), "slave-%d.conf", slaveCnt);
+        // 检查配置文件是否存在，返回文件内容缓冲区
         dbuf_t b = sys_checkFile(cfname);
-        if( b.buf == NULL )
+        if( b.buf == NULL )  // 如果文件不存在，跳出循环
             break;
-        free(b.buf);
-        slaveCnt += 1;
+        free(b.buf);  // 释放文件内容缓冲区内存
+        slaveCnt += 1;  // 从进程计数器递增
     }
+    // 检查从进程数量是否合法（必须大于0且不超过最大发送单元数）
     if( slaveCnt == 0 || slaveCnt > MAX_TXUNITS )
         rt_fatal("%s 'slave-N.conf' files found  (N=0,1,..,%d)",
                  slaveCnt ? "Too many" : "No", MAX_TXUNITS-1);
 
-    assert(slaves == NULL);
-    n_slaves = slaveCnt;
+    assert(slaves == NULL);  // 断言从进程数组尚未初始化
+    n_slaves = slaveCnt;  // 设置全局从进程数量
+    // 为从进程数组分配内存，每个元素为slave_t结构体
     slaves = rt_mallocN(slave_t, n_slaves);
-    int allok = 1;
+    int allok = 1;  // 所有配置是否成功的标志
+    // 遍历所有从进程，进行初始化配置
     for( int sidx=0; sidx < n_slaves; sidx++ ) {
-        struct sx130xconf sx1301conf;
+        struct sx130xconf sx1301conf;  // SX1301配置结构体
+        // 解析从进程的SX1301配置，使用默认的空JSON配置"{}"
         if( !sx130xconf_parse_setup(&sx1301conf, sidx, "sx1301/1", "{}", 2) ) {
-            allok = 0;
+            allok = 0;  // 如果解析失败，标记为失败
         } else {
+            // 保存天线类型配置
             slaves[sidx].antennaType = sx1301conf.antennaType;
         }
+        // 初始化最后期望命令为-1（无命令）
         slaves[sidx].last_expcmd = -1;
     }
+    // 如果有任何从进程配置失败，终止程序
     if( !allok )
         rt_fatal("Failed to load/parse some slave config files");
 
-    master_pid = getpid();
-    atexit(killAllSlaves);
-    signal(SIGPIPE, SIG_IGN);
+    master_pid = getpid();  // 获取并保存主进程PID
+    atexit(killAllSlaves);  // 注册程序退出时的清理函数
+    signal(SIGPIPE, SIG_IGN);  // 忽略SIGPIPE信号（管道破裂信号）
 
+    // 为每个从进程初始化定时器和启动重启流程
     for( int i=0; i<n_slaves; i++ ) {
+        // 初始化从进程的主定时器（无回调函数）
         rt_iniTimer(&slaves[i].tmr, NULL);
+        // 初始化时间同步定时器，回调函数为req_timesync
         rt_iniTimer(&slaves[i].tsync, req_timesync);
+        // 将主定时器设置为执行restart_slave函数，启动从进程
         rt_yieldTo(&slaves[i].tmr, restart_slave);
     }
 }
