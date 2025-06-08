@@ -1,0 +1,60 @@
+graph TB
+    subgraph "startupMaster2 子系统初始化流程"
+        A["startupMaster2 开始"] --> B["特性管理"]
+        B --> C["命令FIFO启用"]
+        C --> D["GPS设备检测"]
+        D --> E["时间同步初始化"]
+        E --> F["CUPS初始化"]
+        F --> G["Web服务初始化"]
+        G --> H["初始化完成"]
+    end
+    
+    subgraph "时间同步子系统流程"
+        E --> E1["sys_iniTC 空初始化"]
+        E1 --> E2["sys_startTC 启动引擎"]
+        E2 --> E3["创建TC实例"]
+        E3 --> E4["连接INFOS服务器"]
+        E4 --> E5["获取MUXS信息"]
+        E5 --> E6["连接MUXS服务器"]
+        E6 --> E7["建立WebSocket连接"]
+    end
+    
+    subgraph "CUPS子系统流程"
+        F --> F1["sys_iniCUPS 初始化定时器"]
+        F1 --> F2["sys_triggerCUPS 触发会话"]
+        F2 --> F3["检查独占模式"]
+        F3 --> F4["创建CUPS实例"]
+        F4 --> F5["设置延迟启动"]
+        F5 --> F6["连接CUPS服务器"]
+        F6 --> F7["处理配置更新"]
+    end
+    
+    subgraph "Web子系统流程"
+        G --> G1["sys_iniWeb 检查端口"]
+        G1 --> G2["创建Web实例"]
+        G2 --> G3["初始化HTTP守护进程"]
+        G3 --> G4["启动Web服务器"]
+        G4 --> G5["监听HTTP端口"]
+        G5 --> G6["设置路由处理"]
+        G6 --> G7["初始化认证模块"]
+    end
+    
+    subgraph "子系统间交互"
+        I1["TC连接失败"] --> I2["触发CUPS重试"]
+        I3["CUPS获取新配置"] --> I4["重启TC连接"]
+        I5["Web管理接口"] --> I6["控制TC/CUPS状态"]
+    end
+    
+    E7 --> I1
+    I2 --> F2
+    F7 --> I3
+    I4 --> E2
+    G7 --> I5
+    I6 --> E2
+    I6 --> F2
+    
+    style A fill:#e1f5fe
+    style E fill:#f3e5f5
+    style F fill:#fff3e0
+    style G fill:#e8f5e8
+    style H fill:#c8e6c9 

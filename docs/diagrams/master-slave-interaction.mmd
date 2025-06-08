@@ -1,0 +1,134 @@
+graph TD
+    subgraph "主进程 (Master Process)"
+        A["main() 程序入口"]
+        A --> B["解析命令行参数"]
+        B --> C["检测slave-N.conf文件"]
+        C --> D["确定从进程数量"]
+        D --> E["ral_ini() 初始化RAL"]
+        E --> F["分配从进程数组 slaves[]"]
+        F --> G["为每个从进程启动restart_slave()"]
+        
+        subgraph "从进程管理循环"
+            G --> H["创建管道pair (up/dn)"]
+            H --> I["fork() 创建子进程"]
+            I --> J{"fork返回值"}
+            J -->|子进程| K["execSlave() 执行从进程"]
+            J -->|父进程| L["保存子进程PID"]
+            L --> M["发送配置 send_config()"]
+            M --> N["启动管道监控 pipe_read()"]
+            N --> O["启动进程监控 recheck_slave()"]
+        end
+        
+        subgraph "主进程监控"
+            O --> P["定期检查从进程状态"]
+            P --> Q{"从进程是否存活"}
+            Q -->|存活| R["继续监控"]
+            Q -->|死亡| S["重启从进程"]
+            S --> T["增加重启计数"]
+            T --> U{"重启次数检查"}
+            U -->|>4次| V["rt_fatal 致命错误"]
+            U -->|<=4次| H
+            R --> P
+        end
+    end
+    
+    subgraph "从进程 (Slave Process)"
+        K --> W["设置环境变量"]
+        W --> X["execvp() 执行从进程程序"]
+        X --> Y["sys_startupSlave() 启动"]
+        Y --> Z["初始化管道通信"]
+        Z --> AA["进入事件循环 aio_loop()"]
+        
+        subgraph "命令处理循环"
+            AA --> BB["pipe_read() 监听主进程命令"]
+            BB --> CC{"命令类型解析"}
+            
+            CC -->|CONFIG| DD["配置无线电硬件"]
+            DD --> EE["sx130xconf_parse_setup()"]
+            EE --> FF["sys_runRadioInit()"]
+            FF --> GG["sx130xconf_start()"]
+            GG --> HH["启动RX轮询"]
+            HH --> II["发送时间同步响应"]
+            
+            CC -->|TX| JJ["处理发送请求"]
+            JJ --> KK["ral_rps2lgw() 参数转换"]
+            KK --> LL["lgw_send() 发送数据"]
+            LL --> MM["返回发送状态"]
+            
+            CC -->|TXSTATUS| NN["查询发送状态"]
+            NN --> OO["lgw_status() 获取状态"]
+            OO --> PP["返回状态信息"]
+            
+            CC -->|TXABORT| QQ["取消发送"]
+            QQ --> RR["lgw_abort_tx() 取消"]
+            
+            CC -->|TIMESYNC| SS["时间同步请求"]
+            SS --> TT["ral_getTimesync() 获取时间"]
+            TT --> UU["发送同步响应"]
+            
+            CC -->|STOP| VV["停止命令"]
+            VV --> WW["lgw_stop() 停止硬件"]
+            
+            II --> BB
+            MM --> BB
+            PP --> BB
+            RR --> BB
+            UU --> BB
+            WW --> BB
+        end
+        
+        subgraph "RX数据处理"
+            HH --> XX["rx_polling() 定时器"]
+            XX --> YY["lgw_receive() 接收数据"]
+            YY --> ZZ{"接收到数据包?"}
+            ZZ -->|是| AAA["处理数据包"]
+            ZZ -->|否| BBB["继续轮询"]
+            AAA --> CCC["发送RX响应到主进程"]
+            CCC --> BBB
+            BBB --> XX
+        end
+    end
+    
+    subgraph "通信机制"
+        DDD["主进程→从进程<br/>下行管道 (dn)"]
+        EEE["从进程→主进程<br/>上行管道 (up)"]
+        
+        M --> DDD
+        DDD --> BB
+        CCC --> EEE
+        EEE --> N
+        MM --> EEE
+        PP --> EEE
+        UU --> EEE
+    end
+    
+    subgraph "环境变量传递"
+        FFF["SLAVE_IDX: 从进程索引"]
+        GGG["SLAVE_RDFD: 读文件描述符"]
+        HHH["SLAVE_WRFD: 写文件描述符"]
+        
+        K --> FFF
+        K --> GGG
+        K --> HHH
+    end
+    
+    subgraph "配置文件管理"
+        III["slave-0.conf"]
+        JJJ["slave-1.conf"]
+        KKK["slave-N.conf"]
+        
+        C --> III
+        C --> JJJ
+        C --> KKK
+        III --> M
+        JJJ --> M
+        KKK --> M
+    end
+    
+    style A fill:#e1f5fe
+    style Y fill:#f3e5f5
+    style AA fill:#fff3e0
+    style BB fill:#e8f5e8
+    style P fill:#f0f4c3
+    style DDD fill:#ffccbc
+    style EEE fill:#d1c4e9 

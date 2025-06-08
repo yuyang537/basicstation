@@ -1,0 +1,155 @@
+graph TD
+    A["程序启动 main()"] --> B["解析命令行参数"]
+    B --> C["处理配置选项"]
+    C --> D{"检查启动模式"}
+    
+    subgraph "启动模式判断"
+        D -->|kill选项| E["killOldPid() 杀死旧进程"]
+        E --> F["程序退出"]
+        
+        D -->|守护进程模式| G["守护进程启动流程"]
+        D -->|从模式| H["从进程启动流程"]
+        D -->|普通模式| I["主进程启动流程"]
+    end
+    
+    subgraph "主进程启动流程详细"
+        I --> J["检查并杀死已运行进程"]
+        J --> K["setupConfigFilenames() 设置配置文件名"]
+        K --> L["checkRollForward() 检查版本前滚"]
+        L --> M["checkUris() 检查URI配置"]
+        M --> N["初始化各个子系统"]
+        
+        subgraph "子系统初始化"
+            N --> N1["aio_ini() 异步IO初始化"]
+            N1 --> N2["sys_iniLogging() 日志系统初始化"]
+            N2 --> N3["sys_ini() 系统初始化"]
+            N3 --> N4["rt_ini() 运行时初始化"]
+            N4 --> N5["ts_iniTimesync() 时间同步初始化"]
+        end
+        
+        N5 --> O["rt_yieldTo(startupMaster) 启动主控制器"]
+    end
+    
+    subgraph "startupMaster 主控制器启动"
+        O --> P["sys_startLogThread() 启动日志线程"]
+        P --> Q{"检查环境变量 STATION_SELFTESTS"}
+        Q -->|存在| R["selftests() 执行自检"]
+        Q -->|不存在| S["跳过自检"]
+        R --> T["writePid() 写入进程ID文件"]
+        S --> T
+        T --> U["sys_runUpdate() 执行待处理更新"]
+        U --> V["ral_ini() 初始化无线电抽象层"]
+        V --> W["atexit(leds_off) 注册退出处理"]
+        W --> X["设置定时器调用 startupMaster2"]
+    end
+    
+    subgraph "RAL初始化和从进程启动关键流程"
+        V --> V1["检测 slave-N.conf 配置文件"]
+        V1 --> V2["确定从进程数量 slaveCnt"]
+        V2 --> V3{"从进程数量检查"}
+        V3 -->|slaveCnt == 0| V4["rt_fatal 没有找到从进程配置"]
+        V3 -->|slaveCnt > MAX_TXUNITS| V5["rt_fatal 从进程数量过多"]
+        V3 -->|合法数量| V6["分配从进程数组 slaves[slaveCnt]"]
+        
+        V6 --> V7["解析每个从进程配置文件"]
+        V7 --> V8["设置主进程PID master_pid"]
+        V8 --> V9["注册退出处理 atexit(killAllSlaves)"]
+        V9 --> V10["忽略SIGPIPE信号"]
+        V10 --> V11["为每个从进程启动 restart_slave()"]
+    end
+    
+    subgraph "restart_slave 从进程启动详细流程"
+        V11 --> Y["检查从进程重启次数"]
+        Y --> Y1{"重启次数 > 4"}
+        Y1 -->|是| Y2["rt_fatal 重启次数过多"]
+        Y1 -->|否| Y3["清除定时器和AIO"]
+        
+        Y3 --> Y4{"从进程是否存活 is_slave_alive()"}
+        Y4 -->|存活| Y5["发送SIGTERM/SIGKILL信号"]
+        Y5 --> Y6["设置重试定时器"]
+        Y6 --> Y
+        
+        Y4 -->|已死亡| Z["创建管道对 pipe2(up, O_NONBLOCK)"]
+        Z --> Z1["创建管道对 pipe2(dn, O_NONBLOCK)"]
+        Z1 --> Z2["fork() 创建子进程"]
+        
+        subgraph "fork分支处理"
+            Z2 --> Z3{"fork返回值"}
+            Z3 -->|子进程 pid==0| AA["execSlave() 执行从进程"]
+            Z3 -->|父进程 pid>0| BB["主进程继续"]
+            Z3 -->|失败 pid<0| CC["rt_fatal fork失败"]
+        end
+        
+        subgraph "子进程执行 execSlave()"
+            AA --> AA1["设置环境变量 SLAVE_IDX"]
+            AA1 --> AA2["设置环境变量 SLAVE_RDFD"]
+            AA2 --> AA3["设置环境变量 SLAVE_WRFD"]
+            AA3 --> AA4["wordexp() 解析执行命令"]
+            AA4 --> AA5["sys_flushLog() 刷新日志"]
+            AA5 --> AA6["execvp() 执行从进程程序"]
+            AA6 --> AA7["从进程重新启动 main()"]
+            AA7 --> AA8["解析环境变量识别为从模式"]
+            AA8 --> AA9["sys_startupSlave() 启动从进程"]
+        end
+        
+        subgraph "主进程继续处理"
+            BB --> BB1["关闭子进程端的管道文件描述符"]
+            BB1 --> BB2["保存子进程PID"]
+            BB2 --> BB3["send_config() 发送配置到从进程"]
+            BB3 --> BB4["pipe_read() 启动管道监控"]
+            BB4 --> BB5["recheck_slave() 启动进程监控"]
+        end
+    end
+    
+    subgraph "从进程配置和通信"
+        BB3 --> DD["构建 ral_config_req 配置请求"]
+        DD --> DD1["包含 hwspec, region, json配置"]
+        DD1 --> DD2["write_slave_pipe() 发送配置"]
+        DD2 --> DD3["从进程接收CONFIG命令"]
+        DD3 --> DD4["sx130xconf_parse_setup() 解析配置"]
+        DD4 --> DD5["sys_runRadioInit() 初始化无线电"]
+        DD5 --> DD6["sx130xconf_start() 启动硬件"]
+        DD6 --> DD7["启动RX轮询和时间同步"]
+    end
+    
+    subgraph "主进程监控循环"
+        BB5 --> EE["recheck_slave() 500ms定时检查"]
+        EE --> EE1["waitpid(WNOHANG) 检查进程状态"]
+        EE1 --> EE2{"从进程状态"}
+        EE2 -->|正常运行| EE3["继续监控"]
+        EE2 -->|进程死亡| EE4["记录错误日志"]
+        EE2 -->|致命退出| EE5["rt_fatal 主程序退出"]
+        EE3 --> EE
+        EE4 --> Y
+    end
+    
+    subgraph "startupMaster2 进一步初始化"
+        X --> FF["startupMaster2() 调用"]
+        FF --> FF1["sys_iniTC() 时间同步初始化"]
+        FF1 --> FF2["sys_startTC() 启动时间同步"]
+        FF2 --> FF3["sys_iniCUPS() CUPS初始化"]
+        FF3 --> FF4["sys_triggerCUPS() 触发CUPS会话"]
+        FF4 --> FF5["sys_iniWeb() Web服务初始化"]
+        FF5 --> FF6["进入主事件循环 aio_loop()"]
+    end
+    
+    subgraph "系统运行状态"
+        FF6 --> GG["主进程事件循环运行"]
+        DD7 --> HH["从进程事件循环运行"]
+        GG --> II["处理网络连接和协议"]
+        HH --> JJ["处理无线电数据收发"]
+        
+        II --> KK["与LNS服务器通信"]
+        JJ --> LL["LoRa数据包处理"]
+        
+        KK --> MM["主从进程协同工作"]
+        LL --> MM
+    end
+    
+    style A fill:#e1f5fe
+    style V fill:#f3e5f5
+    style V11 fill:#fff3e0
+    style Z2 fill:#e8f5e8
+    style AA6 fill:#ffcdd2
+    style BB3 fill:#c8e6c9
+    style MM fill:#4caf50 

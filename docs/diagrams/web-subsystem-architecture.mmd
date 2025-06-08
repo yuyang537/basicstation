@@ -1,0 +1,58 @@
+graph TD
+    subgraph "Web子系统架构"
+        A["sys_iniWeb 初始化"] --> B{"检查Web端口配置"}
+        B -->|端口未配置| C["返回，不启动Web服务"]
+        B -->|端口已配置| D["web_ini 创建Web实例"]
+        
+        D --> E["httpd_ini 初始化HTTP守护进程"]
+        E --> F["rt_iniTimer 初始化超时定时器"]
+        F --> G["web_start 启动Web服务器"]
+        
+        G --> H["httpd_listen 监听指定端口"]
+        H --> I["设置事件回调函数"]
+        I --> J["Web服务器就绪"]
+        
+        J --> K["等待客户端连接"]
+        K --> L["web_onev 处理Web事件"]
+        
+        L --> M{"事件类型"}
+        M -->|HTTP请求| N["HTTPDEV_REQUEST"]
+        M -->|客户端断开| O["HTTPDEV_DEAD"]
+        M -->|连接关闭| P["HTTPDEV_CLOSED"]
+        
+        N --> Q["httpd_parseReqLine 解析请求"]
+        Q --> R["web_route 路由处理"]
+        
+        R --> S{"请求路径"}
+        S -->|静态文件| T["sys_webFile 读取文件"]
+        S -->|API接口| U["调用处理函数"]
+        
+        T --> V["返回文件内容"]
+        U --> W["返回JSON响应"]
+        
+        V --> X["httpd_response 发送响应"]
+        W --> X
+        
+        Y["web_authini 初始化认证"] --> Z["设置认证模块"]
+        
+        AA["sys_stopWeb 停止Web服务"] --> BB["web_free 释放资源"]
+        BB --> CC["httpd_stop 停止HTTP服务"]
+        CC --> DD["httpd_free 释放HTTP资源"]
+    end
+    
+    subgraph "Web处理器"
+        E1["handle_version 版本信息"]
+        E2["handle_api API处理"]
+        E3["SYS_HANDLERS 系统处理器"]
+        E4["AUTH_HANDLERS 认证处理器"]
+    end
+    
+    U --> E1
+    U --> E2
+    U --> E3
+    U --> E4
+    
+    style A fill:#e1f5fe
+    style J fill:#f3e5f5
+    style L fill:#fff3e0
+    style X fill:#e8f5e8 

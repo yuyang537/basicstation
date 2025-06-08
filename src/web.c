@@ -208,12 +208,13 @@ static void web_start (web_t* web) {
 }
 
 
+// 初始化Web子系统
 void sys_iniWeb () {
-    if( !sys_webPort )
-        return;
-    if ( (WEB = web_ini()) )
-        web_start(WEB);
-    web_authini();
+    if( !sys_webPort ) // 如果Web端口未配置或为0
+        return; // 直接返回，不启动Web服务
+    if ( (WEB = web_ini()) ) // 如果Web实例初始化成功
+        web_start(WEB); // 启动Web服务器
+    web_authini(); // 初始化Web认证模块
 }
 
 void sys_stopWeb () {

@@ -1,0 +1,61 @@
+graph TB
+    subgraph "startupMaster 主进程启动详细流程"
+        A["startupMaster() 启动"] --> B["sys_startLogThread() 启动日志线程"]
+        B --> C{"检查STATION_SELFTESTS环境变量"}
+        C -->|存在| D["selftests() 执行自检"]
+        C -->|不存在| E["跳过自检"]
+        
+        D --> F["程序不会到达这里"]
+        E --> G["writePid() 写入进程ID文件"]
+        G --> H["sys_runUpdate() 检查并执行更新"]
+        H --> I["ral_ini() 初始化无线电抽象层"]
+        I --> J["atexit(leds_off) 注册退出清理"]
+        J --> K["rt_setTimerCb() 设置200ms定时器"]
+        K --> L["等待200ms后调用startupMaster2"]
+    end
+    
+    subgraph "startupMaster2 子系统启动"
+        L --> M["startupMaster2() 启动"]
+        M --> N{"检查CFG_no_rmtsh"}
+        N -->|未定义| O["rt_addFeature('rmtsh')"]
+        N -->|已定义| P["跳过rmtsh特性"]
+        
+        O --> Q{"检查CFG_prod"}
+        P --> Q
+        Q -->|已定义| R["rt_addFeature('prod')"]
+        Q -->|未定义| S["跳过prod特性"]
+        
+        R --> T["sys_enableCmdFIFO() 启用命令FIFO"]
+        S --> T
+        T --> U{"检查gpsDevice"}
+        U -->|存在| V["rt_addFeature('gps')"]
+        U -->|不存在| W["跳过GPS"]
+        
+        V --> X["sys_enableGPS() 启用GPS设备"]
+        X --> Y["sys_iniTC() 初始化时间同步"]
+        W --> Y
+        Y --> Z["sys_startTC() 启动时间同步"]
+        Z --> AA["sys_iniCUPS() 初始化CUPS"]
+        AA --> BB["sys_triggerCUPS(0) 触发CUPS"]
+        BB --> CC["sys_iniWeb() 初始化Web服务"]
+        CC --> DD["主进程初始化完成"]
+    end
+    
+    subgraph "后续运行"
+        DD --> EE["进入aio_loop()主事件循环"]
+        EE --> FF["处理网络事件"]
+        EE --> GG["处理定时器事件"]
+        EE --> HH["处理LoRa数据"]
+        EE --> II["处理Web请求"]
+        
+        FF --> EE
+        GG --> EE
+        HH --> EE
+        II --> EE
+    end
+    
+    style A fill:#e1f5fe
+    style M fill:#f3e5f5
+    style Y fill:#fff3e0
+    style CC fill:#e8f5e8
+    style EE fill:#c8e6c9 

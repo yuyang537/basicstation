@@ -1,0 +1,171 @@
+graph TD
+    A["主进程启动"] --> B["ral_ini() 无线电抽象层初始化"]
+    
+    subgraph "从进程配置发现阶段"
+        B --> C["扫描 slave-N.conf 配置文件"]
+        C --> C1["检查 slave-0.conf"]
+        C1 --> C2["检查 slave-1.conf"]
+        C2 --> C3["检查 slave-N.conf..."]
+        C3 --> D["统计发现的从进程数量 slaveCnt"]
+        D --> E{"配置文件数量检查"}
+        E -->|slaveCnt == 0| F["rt_fatal: 没有找到从进程配置"]
+        E -->|slaveCnt > MAX_TXUNITS| G["rt_fatal: 从进程数量超限"]
+        E -->|合法范围| H["分配从进程管理数组"]
+    end
+    
+    subgraph "从进程管理结构初始化"
+        H --> I["分配 slaves[slaveCnt] 数组"]
+        I --> J["解析每个从进程的配置文件"]
+        J --> K["提取天线类型等参数"]
+        K --> L["设置主进程PID master_pid = getpid()"]
+        L --> M["注册退出处理函数 atexit(killAllSlaves)"]
+        M --> N["忽略SIGPIPE信号 signal(SIGPIPE, SIG_IGN)"]
+        N --> O["为每个从进程初始化定时器"]
+    end
+    
+    subgraph "逐个启动从进程循环"
+        O --> P["for(i=0; i<n_slaves; i++)"]
+        P --> Q["rt_iniTimer(&slaves[i].tmr, NULL)"]
+        Q --> R["rt_iniTimer(&slaves[i].tsync, req_timesync)"]
+        R --> S["rt_yieldTo(&slaves[i].tmr, restart_slave)"]
+        S --> T{"是否还有更多从进程"}
+        T -->|是| P
+        T -->|否| U["所有从进程启动完成"]
+    end
+    
+    subgraph "restart_slave 从进程启动核心逻辑"
+        S --> V["restart_slave() 被调用"]
+        V --> W["检查重启计数 restartCnt"]
+        W --> X{"重启次数检查"}
+        X -->|restartCnt > 4| Y["rt_fatal: 重启次数过多"]
+        X -->|restartCnt <= 4| Z["增加重启计数 restartCnt++"]
+        
+        Z --> AA["清理资源"]
+        AA --> AB["rt_clrTimer(&slave->tmr)"]
+        AB --> AC["rt_clrTimer(&slave->tsync)"]
+        AC --> AD["aio_close(slave->up/dn)"]
+        AD --> AE["设置 slave->up = slave->dn = NULL"]
+        
+        AE --> AF{"检查从进程是否还活着"}
+        AF -->|存活| AG["发送终止信号"]
+        AF -->|已死| AH["开始创建新进程"]
+        
+        subgraph "终止已存在的从进程"
+            AG --> AG1["LOG: 尝试杀死进程"]
+            AG1 --> AG2{"杀死计数 killCnt"}
+            AG2 -->|killCnt <= 2| AG3["发送SIGTERM信号"]
+            AG2 -->|killCnt > 2| AG4["发送SIGKILL信号"]
+            AG3 --> AG5["kill(pid, SIGTERM)"]
+            AG4 --> AG6["kill(pid, SIGKILL)"]
+            AG5 --> AG7["增加杀死计数 killCnt++"]
+            AG6 --> AG7
+            AG7 --> AG8["设置重试定时器 100ms"]
+            AG8 --> V
+        end
+    end
+    
+    subgraph "创建新从进程详细流程"
+        AH --> BA["创建上行管道 pipe2(up, O_NONBLOCK)"]
+        BA --> BB["创建下行管道 pipe2(dn, O_NONBLOCK)"]
+        BB --> BC["刷新日志 sys_flushLog()"]
+        BC --> BD["fork() 创建子进程"]
+        
+        BD --> BE{"fork返回值判断"}
+        BE -->|pid == 0 子进程| CA["子进程执行路径"]
+        BE -->|pid > 0 父进程| DA["父进程执行路径"]
+        BE -->|pid < 0 失败| EA["rt_fatal: Fork失败"]
+        
+        subgraph "子进程执行路径 execSlave()"
+            CA --> CB["设置从进程环境变量"]
+            CB --> CC["setenv('SLAVE_IDX', idx, 1)"]
+            CC --> CD["setenv('SLAVE_RDFD', rdfd, 1)"]
+            CD --> CE["setenv('SLAVE_WRFD', wrfd, 1)"]
+            CE --> CF["wordexp() 解析执行命令模板"]
+            CF --> CG["构建命令行参数数组"]
+            CG --> CH["sys_flushLog() 刷新日志"]
+            CH --> CI["execvp() 执行从进程程序"]
+            
+            CI --> CJ["从进程重新启动 main()"]
+            CJ --> CK["解析命令行参数"]
+            CK --> CL["检测到从模式环境变量"]
+            CL --> CM["解析 SLAVE_IDX/RDFD/WRFD"]
+            CM --> CN["sys_startupSlave(rdfd, wrfd)"]
+            CN --> CO["从进程进入事件循环"]
+        end
+        
+        subgraph "父进程继续处理路径"
+            DA --> DB["关闭子进程使用的管道端"]
+            DB --> DC["close(up[1]) close(dn[0])"]
+            DC --> DD["保存子进程PID slave->pid = pid"]
+            DD --> DE["LOG: 记录从进程启动信息"]
+            DE --> DF["打开异步IO管道"]
+            DF --> DG["slave->up = aio_open(up[0], pipe_read)"]
+            DG --> DH["slave->dn = aio_open(dn[1], NULL)"]
+            DH --> DI["发送配置 send_config(slave)"]
+            DI --> DJ["启动管道读取 pipe_read(slave->up)"]
+            DJ --> DK["启动进程监控 recheck_slave()"]
+        end
+    end
+    
+    subgraph "配置发送和初始化"
+        DI --> FA["构建 ral_config_req 结构"]
+        FA --> FB["设置 hwspec = 'sx1301/1'"]
+        FB --> FC["设置 region 区域参数"]
+        FC --> FD["复制JSON配置到req.json"]
+        FD --> FE["设置上行通道配置 req.upchs"]
+        FE --> FF["write_slave_pipe() 发送配置"]
+        
+        FF --> FG["从进程接收CONFIG命令"]
+        FG --> FH["sx130xconf_parse_setup() 解析配置"]
+        FH --> FI["sx130xconf_challoc() 分配通道"]
+        FI --> FJ["sys_runRadioInit() 初始化无线电"]
+        FJ --> FK["sx130xconf_start() 启动硬件"]
+        FK --> FL["启动RX轮询定时器"]
+        FL --> FM["sendTimesync() 发送时间同步"]
+        FM --> FN["从进程配置完成"]
+    end
+    
+    subgraph "从进程监控和管理"
+        DK --> GA["recheck_slave() 500ms定时检查"]
+        GA --> GB["waitpid(pid, WNOHANG) 检查状态"]
+        GB --> GC{"进程状态判断"}
+        GC -->|正常运行| GD["继续监控"]
+        GC -->|WIFEXITED| GE["进程正常退出"]
+        GC -->|WIFSIGNALED| GF["进程被信号终止"]
+        GC -->|其他错误| GG["进程异常"]
+        
+        GD --> GH["rt_setTimer() 设置下次检查"]
+        GH --> GA
+        
+        GE --> GI["检查退出码"]
+        GI --> GJ{"退出码检查"}
+        GJ -->|FATAL_*| GK["rt_fatal: 从进程致命错误"]
+        GJ -->|其他| GL["LOG: 记录退出信息"]
+        
+        GF --> GM["LOG: 记录信号终止"]
+        GG --> GN["LOG: 记录异常状态"]
+        
+        GL --> GO["清零PID slave->pid = 0"]
+        GM --> GO
+        GN --> GO
+        GO --> V
+    end
+    
+    subgraph "系统运行状态"
+        FN --> HA["从进程正常运行"]
+        U --> HB["主进程继续其他初始化"]
+        HA --> HC["处理主进程命令"]
+        HB --> HD["startupMaster2() 继续初始化"]
+        HC --> HE["TX/RX数据处理"]
+        HD --> HF["进入主事件循环"]
+        HE --> HG["主从进程协同工作"]
+        HF --> HG
+    end
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style V fill:#fff3e0
+    style BD fill:#e8f5e8
+    style CI fill:#ffcdd2
+    style DI fill:#c8e6c9
+    style HG fill:#4caf50 

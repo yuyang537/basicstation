@@ -1,0 +1,30 @@
+graph TD
+    subgraph "时间同步子系统 TC 架构"
+        A["sys_iniTC 初始化"] --> B["sys_startTC 启动TC引擎"]
+        B --> C["tc_ini 创建TC实例"]
+        C --> D["tc_start 启动TC连接"]
+        D --> E["连接到INFOS服务器"]
+        E --> F["获取MUXS URI"]
+        F --> G["连接到MUXS服务器"]
+        G --> H["TC_MUXS_CONNECTED 状态"]
+        
+        H --> I{"连接状态监控"}
+        I -->|连接正常| J["维持连接"]
+        I -->|连接断开| K["tc_continue 重连逻辑"]
+        
+        K --> L{"重连策略"}
+        L -->|MUXS重连| M["MUXS_BACKOFF 退避重连"]
+        L -->|INFOS重连| N["INFOS_BACKOFF 退避重连"]
+        L -->|达到重试限制| O["触发CUPS sys_triggerCUPS"]
+        
+        M --> E
+        N --> E
+        
+        P["sys_stopTC 停止TC"] --> Q["tc_free 释放资源"]
+        Q --> R["设置状态为TC_DISCONNECTED"]
+    end
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style H fill:#e8f5e8
+    style P fill:#ffcdd2 

@@ -386,29 +386,35 @@ void tc_continue (tc_t* tc) {
 }
 
 
+// 停止时间同步引擎
 void sys_stopTC () {
-    if( TC != NULL ) {
-        LOG(MOD_TCE|INFO, "Terminating TC engine");
-        tc_free(TC);
-        TC = NULL;
-        sys_inState(SYSIS_TC_DISCONNECTED);
+    if( TC != NULL ) { // 如果TC引擎存在
+        LOG(MOD_TCE|INFO, "Terminating TC engine"); // 记录TC引擎终止日志
+        tc_free(TC); // 释放TC资源
+        TC = NULL; // 将TC指针置空
+        sys_inState(SYSIS_TC_DISCONNECTED); // 设置系统状态为TC断开连接
     }
 }
 
 
+// 启动时间同步引擎
 void sys_startTC () {
-    if( TC != NULL || sys_noTC )
-        return;  // already running
-    LOG(MOD_TCE|INFO, "Starting TC engine");
-    TC = tc_ini(NULL);
-    tc_start(TC);
-    sys_inState(SYSIS_TC_DISCONNECTED);
+    if( TC != NULL || sys_noTC ) // 如果TC已运行或系统禁用TC
+        return;  // 直接返回，不重复启动
+    LOG(MOD_TCE|INFO, "Starting TC engine"); // 记录TC引擎启动日志
+    TC = tc_ini(NULL); // 初始化TC实例
+    tc_start(TC); // 启动TC连接
+    sys_inState(SYSIS_TC_DISCONNECTED); // 设置系统状态为TC断开连接（初始状态）
 }
 
 
+// 初始化时间同步子系统（空实现，实际初始化在sys_startTC中进行）
 void sys_iniTC () {
+    // 该函数为空实现，TC的实际初始化在sys_startTC函数中进行
+    // 保留此函数是为了保持接口的一致性
 }
 
+// 获取时间同步引擎状态
 s1_t sys_statusTC () {
-    return TC ? TC->tstate : tstateLast;
+    return TC ? TC->tstate : tstateLast; // 如果TC存在返回当前状态，否则返回最后状态
 }

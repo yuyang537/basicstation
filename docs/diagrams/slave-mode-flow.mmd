@@ -1,0 +1,94 @@
+graph TD
+    A["程序启动"] --> B["解析命令行参数"]
+    B --> C{"检查是否为从模式<br/>opts->slaveMode"}
+    C -->|否| D["主模式流程"]
+    C -->|是| E["从模式初始化"]
+    
+    subgraph "从模式环境变量检查"
+        E --> F["检查环境变量 SLAVE_IDX"]
+        F --> G["检查环境变量 SLAVE_RDFD"]
+        G --> H["检查环境变量 SLAVE_WRFD"]
+        H --> I["解析和验证环境变量值"]
+        I --> J{"环境变量完整性检查"}
+        J -->|失败| K["rt_fatal 错误退出"]
+        J -->|成功| L["设置从模式参数"]
+    end
+    
+    subgraph "从模式主循环准备"
+        L --> M["初始化各个子系统"]
+        M --> N["aio_ini() 异步IO初始化"]
+        N --> O["sys_iniLogging() 日志系统初始化"]
+        O --> P["sys_ini() 系统初始化"]
+        P --> Q["rt_ini() 运行时初始化"]
+        Q --> R["ts_iniTimesync() 时间同步初始化"]
+    end
+    
+    subgraph "从进程启动"
+        R --> S["sys_startupSlave(rdfd, wrfd)"]
+        S --> T["打开读取管道 rd_aio"]
+        T --> U["打开写入管道 wr_aio"]
+        U --> V["初始化RX轮询定时器 rxpoll_tmr"]
+        V --> W["开始监听管道 pipe_read()"]
+        W --> X["记录从进程启动日志"]
+        X --> Y["进入异步IO事件循环 aio_loop()"]
+    end
+    
+    subgraph "从进程主循环"
+        Y --> Z["等待主进程命令"]
+        Z --> AA{"接收到的命令类型"}
+        
+        AA -->|CONFIG| BB["RAL_CMD_CONFIG<br/>配置无线电硬件"]
+        BB --> CC["解析配置JSON"]
+        CC --> DD["运行无线电初始化"]
+        DD --> EE["启动无线电硬件"]
+        EE --> FF["开始RX轮询"]
+        FF --> GG["发送时间同步响应"]
+        GG --> Z
+        
+        AA -->|TX| HH["RAL_CMD_TX<br/>发送数据包"]
+        HH --> II["设置发送参数"]
+        II --> JJ["调用lgw_send()"]
+        JJ --> KK["返回发送状态"]
+        KK --> Z
+        
+        AA -->|TXSTATUS| LL["RAL_CMD_TXSTATUS<br/>查询发送状态"]
+        LL --> MM["调用lgw_status()"]
+        MM --> NN["返回当前状态"]
+        NN --> Z
+        
+        AA -->|TXABORT| OO["RAL_CMD_TXABORT<br/>取消发送"]
+        OO --> PP["调用lgw_abort_tx()"]
+        PP --> Z
+        
+        AA -->|TIMESYNC| QQ["RAL_CMD_TIMESYNC<br/>时间同步请求"]
+        QQ --> RR["获取时间同步信息"]
+        RR --> SS["发送时间同步响应"]
+        SS --> Z
+        
+        AA -->|STOP| TT["RAL_CMD_STOP<br/>停止命令"]
+        TT --> UU["清除定时器"]
+        UU --> VV["停止无线电硬件"]
+        VV --> Z
+        
+        AA -->|EOF| WW["主进程断开连接"]
+        WW --> XX["记录断开日志"]
+        XX --> YY["从进程退出"]
+    end
+    
+    subgraph "RX数据处理"
+        FF --> ZZ["rx_polling 定时器触发"]
+        ZZ --> AAA["lgw_receive() 接收数据包"]
+        AAA --> BBB{"是否接收到数据"}
+        BBB -->|是| CCC["处理接收数据包"]
+        CCC --> DDD["发送RX响应给主进程"]
+        DDD --> EEE["设置下次轮询定时器"]
+        EEE --> ZZ
+        BBB -->|否| EEE
+    end
+    
+    style A fill:#e1f5fe
+    style S fill:#f3e5f5
+    style Y fill:#fff3e0
+    style Z fill:#e8f5e8
+    style YY fill:#ffcdd2
+    style CCC fill:#c8e6c9 

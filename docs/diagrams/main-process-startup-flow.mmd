@@ -1,0 +1,83 @@
+graph TD
+    subgraph "程序入口和参数解析"
+        A["main() 程序启动"] --> B["解析命令行参数"]
+        B --> C{"检查启动模式"}
+        C -->|kill模式| D["killOldPid() 杀死旧进程"]
+        C -->|version模式| E["显示版本信息并退出"]
+        C -->|正常启动| F["检查进程是否已运行"]
+        
+        D --> Z1["程序退出"]
+        E --> Z1
+        F --> G{"force选项检查"}
+        G -->|有force| H["killOldPid() 强制杀死旧进程"]
+        G -->|无force且已运行| I["显示错误信息并退出"]
+        G -->|无冲突| J["继续启动流程"]
+        H --> J
+        I --> Z1
+    end
+    
+    subgraph "配置和验证"
+        J --> K["setupConfigFilenames() 设置配置文件名"]
+        K --> L["checkRollForward() 检查版本前滚"]
+        L --> M["checkUris() 检查URI配置"]
+        M --> N{"URI检查结果"}
+        N -->|失败| Z1
+        N -->|成功| O["配置验证完成"]
+    end
+    
+    subgraph "守护进程模式处理"
+        O --> P{"是否为守护进程模式"}
+        P -->|否| AA["跳转到子系统初始化"]
+        P -->|是| Q["设置默认日志文件"]
+        Q --> R["第一次fork() 创建守护进程"]
+        R --> S{"fork返回值"}
+        S -->|父进程| T["写入PID文件"]
+        S -->|子进程| U["继续守护进程初始化"]
+        S -->|失败| V["致命错误退出"]
+        
+        T --> W["父进程退出"]
+        U --> X["setsid() 创建新会话"]
+        X --> Y["脱离控制终端"]
+        Y --> AA
+    end
+    
+    subgraph "子系统初始化"
+        AA --> BB["aio_ini() 初始化异步IO"]
+        BB --> CC["sys_iniLogging() 初始化日志系统"]
+        CC --> DD["sys_ini() 初始化系统"]
+        DD --> EE["rt_ini() 初始化运行时"]
+        EE --> FF["ts_iniTimesync() 初始化时间同步"]
+    end
+    
+    subgraph "启动模式选择"
+        FF --> GG{"检查是否为从模式<br/>(sys_slaveIdx >= 0)"}
+        GG -->|是| HH["从模式分支"]
+        GG -->|否| II{"检查是否为守护进程<br/>(daemon)"}
+        II -->|是| JJ["rt_yieldTo(startupDaemon)"]
+        II -->|否| KK["rt_yieldTo(startupMaster)"]
+        
+        subgraph "从模式启动流程"
+            HH --> HH1["sys_startupSlave(rdfd, wrfd)"]
+            HH1 --> HH2["初始化管道通信"]
+            HH2 --> HH3["开始监听主进程命令"]
+            HH3 --> HH4["进入从进程事件循环"]
+        end
+        
+        HH4 --> LL["从进程主循环"]
+        JJ --> MM["守护进程主循环"]
+        KK --> NN["主进程主循环"]
+    end
+    
+    subgraph "主循环启动"
+        MM --> OO["aio_loop() 异步IO事件循环"]
+        NN --> OO
+        LL --> OO
+        OO --> PP["程序运行中..."]
+    end
+    
+    style A fill:#e1f5fe
+    style J fill:#f3e5f5
+    style O fill:#fff3e0
+    style AA fill:#e8f5e8
+    style OO fill:#c8e6c9
+    style PP fill:#4caf50

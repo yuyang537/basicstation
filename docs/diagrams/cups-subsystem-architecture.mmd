@@ -1,0 +1,47 @@
+graph TD
+    subgraph "CUPS子系统架构"
+        A["sys_iniCUPS 初始化"] --> B["初始化cups_sync_tmr定时器"]
+        B --> C["sys_triggerCUPS 触发CUPS会话"]
+        
+        C --> D{"检查CUPS状态"}
+        D -->|已在交互| E["返回，避免重复"]
+        D -->|可以启动| F["cups_ini 创建CUPS实例"]
+        
+        F --> G["设置延迟启动定时器"]
+        G --> H["delayedCUPSstart 延迟启动"]
+        H --> I["cups_start 启动CUPS连接"]
+        
+        I --> J["连接到CUPS服务器"]
+        J --> K["发送更新请求"]
+        K --> L["接收响应数据"]
+        
+        L --> M{"数据类型"}
+        M -->|URI更新| N["更新CUPS/TC URI"]
+        M -->|凭证更新| O["更新CUPS/TC凭证"]
+        M -->|固件签名| P["处理固件签名"]
+        M -->|固件更新| Q["处理固件更新"]
+        
+        N --> R["cups_ondone 完成处理"]
+        O --> R
+        P --> R
+        Q --> R
+        
+        R --> S{"交互结果"}
+        S -->|成功| T["设置下次同步定时器"]
+        S -->|失败| U["重试或切换凭证集"]
+        
+        U --> V{"重试策略"}
+        V -->|继续重试| C
+        V -->|切换凭证| W["使用备用凭证"]
+        W --> C
+        
+        X["独占模式检查"] --> Y{"CFG_cups_exclusive"}
+        Y -->|是| Z["停止TC引擎"]
+        Z --> F
+        Y -->|否| F
+    end
+    
+    style A fill:#e1f5fe
+    style F fill:#f3e5f5
+    style J fill:#fff3e0
+    style R fill:#e8f5e8 

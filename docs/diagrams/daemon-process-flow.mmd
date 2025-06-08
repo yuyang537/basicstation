@@ -1,0 +1,64 @@
+graph TB
+    subgraph "守护进程模式启动流程"
+        A["守护进程模式启动"] --> B["startupDaemon() 启动"]
+        B --> C["sys_inState(SYSIS_STATION_DEAD)"]
+        C --> D["sys_flushLog() 刷新日志"]
+        D --> E["第二次fork() 创建工作进程"]
+        
+        E --> F{"fork返回值"}
+        F -->|子进程| G["工作进程代码块"]
+        F -->|父进程| H["守护进程代码块"]
+        F -->|失败| I["rt_fatal() 致命错误"]
+        
+        G --> J["sys_iniLogging() 重新初始化日志"]
+        J --> K["记录工作进程启动日志"]
+        K --> L["rt_yieldTo(startupMaster)"]
+        L --> M["startupMaster 主进程流程"]
+        
+        H --> N["workerPid = subprocPid 保存工作进程ID"]
+        N --> O["rt_yieldTo(waitForWorker)"]
+        O --> P["waitForWorker() 监控循环"]
+    end
+    
+    subgraph "工作进程监控循环"
+        P --> Q["waitpid() 非阻塞检查工作进程"]
+        Q --> R{"工作进程状态"}
+        R -->|正常运行| S["rt_setTimer() 500ms后再检查"]
+        R -->|进程死亡| T["记录进程死亡日志"]
+        
+        S --> P
+        T --> U["workerPid = 0 清除进程ID"]
+        U --> V["startupDaemon() 重新启动"]
+        V --> B
+    end
+    
+    subgraph "工作进程执行流程"
+        M --> W["完整的startupMaster流程"]
+        W --> X["startupMaster2 子系统初始化"]
+        X --> Y["aio_loop() 主事件循环"]
+        Y --> Z["LoRa数据处理"]
+        Y --> AA["网络通信处理"]
+        Y --> BB["Web服务处理"]
+        Y --> CC["定时器事件处理"]
+        
+        Z --> Y
+        AA --> Y
+        BB --> Y
+        CC --> Y
+    end
+    
+    subgraph "进程死亡和重启"
+        DD["工作进程异常退出"] --> T
+        EE["工作进程崩溃"] --> T
+        FF["工作进程被杀死"] --> T
+        
+        V --> GG["自动重启机制"]
+        GG --> HH["无限重启循环"]
+        HH --> II["确保服务高可用性"]
+    end
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style P fill:#fff3e0
+    style Y fill:#e8f5e8
+    style GG fill:#ffcdd2

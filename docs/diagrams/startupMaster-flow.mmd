@@ -1,0 +1,12 @@
+graph TD
+    A["启动主进程的初始化函数 startupMaster"] --> B["启动日志线程 sys_startLogThread"]
+    B --> C{"检查环境变量 STATION_SELFTESTS"}
+    C -->|存在| D["执行自检功能 selftests"]
+    C -->|不存在| E["跳过自检"]
+    D --> F["终止旧进程并记录当前进程ID writePid"]
+    E --> F
+    F --> G["检查并执行待处理更新 sys_runUpdate"]
+    G --> H["初始化无线电抽象层 ral_ini"]
+    H --> I["注册程序退出时关闭LED的函数 atexit(leds_off)"]
+    I --> J["设置定时器以调用 startupMaster2"]
+    J --> K["启动从进程 startupMaster2"] 

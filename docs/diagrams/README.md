@@ -45,6 +45,51 @@
 - **资源管理**：PID文件和进程生命周期管理
 - **错误恢复**：完整的监控、日志和错误处理机制
 
+### 6. startupMaster-flow.mmd
+描述了 `startupMaster` 函数的启动流程，包括日志线程启动、自检、进程管理、更新处理、无线电初始化、退出处理和定时器设置等步骤。
+
+### 7. startupMaster2-flow.mmd
+描述了 `startupMaster2` 函数的子系统初始化流程，包括特性管理、命令FIFO启用、GPS设备检测、时间同步、CUPS和Web子系统的初始化过程。
+
+### 8. startupMaster2-architecture.mmd
+展示了 `startupMaster2` 函数的架构设计，包括特性管理模块、通信子系统、GPS子系统、时间同步子系统、CUPS子系统和Web子系统的组织结构和相互关系。
+
+### 9. tc-subsystem-architecture.mmd
+详细描述了时间同步子系统（TC）的架构，包括初始化流程、连接管理、重连策略和状态监控机制。展示了TC引擎如何连接INFOS和MUXS服务器，以及失败时的恢复策略。
+
+### 10. cups-subsystem-architecture.mmd
+展示了CUPS（配置和更新服务器）子系统的完整架构，包括会话触发、连接管理、数据处理（URI、凭证、固件更新）和重试机制。还包括独占模式下与TC子系统的交互。
+
+### 11. web-subsystem-architecture.mmd
+描述了Web子系统的架构设计，包括HTTP服务器初始化、请求路由处理、静态文件服务、API接口处理和认证模块。展示了Web服务器如何处理不同类型的HTTP事件。
+
+### 12. subsystem-interaction-flow.mmd
+综合展示了 `startupMaster2` 中各个子系统的初始化流程和相互交互关系。包括时间同步、CUPS和Web子系统的启动顺序，以及它们之间的依赖关系和故障恢复机制。
+
+### 13. main-process-startup-flow.mmd
+展示了整个程序从启动到运行的完整流程，包括参数解析、配置验证、守护进程处理、子系统初始化和最终进入主事件循环的全过程。覆盖了所有启动模式（普通模式、守护进程模式、从进程模式）。
+
+### 14. startup-master-detailed-flow.mmd
+详细描述了 `startupMaster` 和 `startupMaster2` 函数的执行流程，包括日志线程启动、自检、PID管理、更新处理、无线电初始化、各个子系统的启动顺序，以及最终进入事件循环的过程。
+
+### 15. daemon-process-flow.mmd
+专门展示守护进程模式的工作机制，包括双层fork架构、工作进程监控、自动重启机制和进程间的协调。详细说明了守护进程如何确保服务的高可用性和故障恢复能力。
+
+### 16. slave-mode-flow.mmd
+展示从模式启动和运行的完整流程图，包括环境变量检查、管道通信初始化、命令处理循环和RX数据处理。详细描述了从进程如何响应主进程的各种命令（CONFIG、TX、TXSTATUS、TXABORT、TIMESYNC、STOP）。
+
+### 17. master-slave-interaction.mmd  
+展示主从模式交互架构图，详细描述主进程和从进程之间的通信机制。包括从进程的创建和管理、管道通信、监控重启逻辑、配置文件管理和环境变量传递机制。
+
+### 18. complete-startup-flow.mmd
+展示完整的主进程启动流程图，包括所有启动模式的详细处理过程。特别详细描述了主进程如何发现、创建、配置和监控从进程，以及各个子系统的初始化顺序和最终的协同工作状态。
+
+### 19. master-startup-slave-process.mmd
+专门聚焦于主进程启动从进程的详细机制图。深入展示了从配置文件发现、fork创建、环境变量设置、管道通信建立、配置发送、进程监控到故障恢复的完整过程。是理解主从架构实现细节的核心图表。
+
+### 20. master-startup-summary.md
+主进程启动从进程流程的详细文字解释文档。包含完整的代码示例和技术分析，深入解释主从架构的设计原理、可靠性机制、通信协议和错误处理策略。是理解Basic Station主从架构的重要技术文档。
+
 ## 如何查看架构图
 
 这些架构图使用Mermaid格式编写，可以通过以下方式查看：

@@ -1,0 +1,32 @@
+graph TD
+    A["startupMaster2 函数启动"] --> B{"检查是否启用远程shell特性"}
+    B -->|CFG_no_rmtsh未定义| C["添加rmtsh特性 rt_addFeature('rmtsh')"]
+    B -->|CFG_no_rmtsh已定义| D["跳过rmtsh特性"]
+    
+    C --> E{"检查是否为生产环境"}
+    D --> E
+    E -->|CFG_prod已定义| F["添加prod特性 rt_addFeature('prod')"]
+    E -->|CFG_prod未定义| G["跳过prod特性"]
+    
+    F --> H["启用命令FIFO sys_enableCmdFIFO"]
+    G --> H
+    H --> I{"检查GPS设备是否存在"}
+    
+    I -->|GPS设备存在| J["添加GPS特性 rt_addFeature('gps')"]
+    I -->|GPS设备不存在| K["跳过GPS初始化"]
+    
+    J --> L["启用GPS设备 sys_enableGPS"]
+    L --> M["初始化时间同步子系统 sys_iniTC"]
+    K --> M
+    
+    M --> N["启动时间同步子系统 sys_startTC"]
+    N --> O["初始化CUPS子系统 sys_iniCUPS"]
+    O --> P["触发CUPS子系统 sys_triggerCUPS(0)"]
+    P --> Q["初始化Web子系统 sys_iniWeb"]
+    Q --> R["startupMaster2 完成"]
+    
+    style A fill:#e1f5fe
+    style H fill:#f3e5f5
+    style M fill:#fff3e0
+    style Q fill:#e8f5e8
+    style R fill:#c8e6c9 

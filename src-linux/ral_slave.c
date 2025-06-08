@@ -155,19 +155,20 @@ static void sendTimesync () {
 
 
 static void pipe_read (aio_t* aio) {
-    u1_t buf[PIPE_BUF];
-    while(1) {
-        int n = read(aio->fd, buf, sizeof(buf));
-        if( n == 0 ) {
-            // EOF
-            LOG(MOD_RAL|INFO, "EOF from master (%d)", sys_slaveIdx);
-            exit(2);
+    // 管道读取回调函数：处理从主进程接收到的命令
+    u1_t buf[PIPE_BUF];  // 创建缓冲区用于读取数据
+    while(1) {  // 持续读取数据直到没有更多数据
+        int n = read(aio->fd, buf, sizeof(buf));  // 从管道读取数据
+        if( n == 0 ) {  // 如果读取到0字节，表示EOF（文件结束）
+            // EOF - 主进程关闭了管道
+            LOG(MOD_RAL|INFO, "EOF from master (%d)", sys_slaveIdx);  // 记录主进程断开连接的日志
+            exit(2);  // 退出从进程
             return;
         }
-        if( n == -1 ) {
-            if( errno == EAGAIN )
-                return;
-            rt_fatal("Slave pipe read fail: %s", strerror(errno));
+        if( n == -1 ) {  // 如果读取失败
+            if( errno == EAGAIN )  // 如果是非阻塞IO的EAGAIN错误
+                return;  // 暂时没有数据可读，直接返回
+            rt_fatal("Slave pipe read fail: %s", strerror(errno));  // 其他错误，记录并退出
         }
         int off = 0;
         while( off < n ) {
@@ -292,15 +293,18 @@ static void pipe_read (aio_t* aio) {
 
 
 void sys_startupSlave (int rdfd, int wrfd) {
-    // Use rxpoll_tmr as dummy context
-    rd_aio = aio_open(&rxpoll_tmr, rdfd, pipe_read, NULL);
-    wr_aio = aio_open(&rxpoll_tmr, wrfd, NULL, NULL);
-    rt_iniTimer(&rxpoll_tmr, NULL);
-    pipe_read(rd_aio);
-    LOG(MOD_RAL|INFO, "Slave LGW (%d) - started.", sys_slaveIdx);
-    aio_loop();
-    // NOT REACHED
-    assert(0);
+    // 从模式启动函数：初始化从进程，建立与主进程的通信管道
+    // 参数: rdfd - 从主进程读取命令的文件描述符, wrfd - 向主进程写入响应的文件描述符
+    
+    // 使用rxpoll_tmr作为虚拟上下文，初始化异步IO
+    rd_aio = aio_open(&rxpoll_tmr, rdfd, pipe_read, NULL);  // 打开读取管道，注册pipe_read回调处理主进程命令
+    wr_aio = aio_open(&rxpoll_tmr, wrfd, NULL, NULL);  // 打开写入管道，用于向主进程发送响应
+    rt_iniTimer(&rxpoll_tmr, NULL);  // 初始化定时器，用于RX轮询
+    pipe_read(rd_aio);  // 开始监听主进程发送的命令
+    LOG(MOD_RAL|INFO, "Slave LGW (%d) - started.", sys_slaveIdx);  // 记录从进程启动日志
+    aio_loop();  // 进入异步IO事件循环，等待并处理主进程命令
+    // 不会到达这里
+    assert(0);  // 断言失败，如果到达这里说明程序异常退出
 }
 
 #endif // defined(CFG_lgw1) && defined(CFG_ral_master_slave)

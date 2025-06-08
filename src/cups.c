@@ -498,28 +498,29 @@ static void delayedCUPSstart(tmr_t* tmr) {
     cups_start(CUPS);
 }
 
+// 触发CUPS会话（延迟启动CUPS连接）
 void sys_triggerCUPS (int delay) {
-    if( CUPS != NULL || sys_noCUPS )
-        return;  // interaction pending
+    if( CUPS != NULL || sys_noCUPS ) // 如果CUPS交互正在进行或系统禁用CUPS
+        return;  // 直接返回，避免重复交互
 #if defined(CFG_cups_exclusive)
-    if( !sys_noTC ) {
-        LOG(MOD_CUP|INFO, "Stopping TC in favor of CUPS");
-        sys_stopTC();
+    if( !sys_noTC ) { // 如果TC未被禁用
+        LOG(MOD_CUP|INFO, "Stopping TC in favor of CUPS"); // 记录为了CUPS而停止TC的日志
+        sys_stopTC(); // 停止TC以支持CUPS独占模式
     }
 #endif // defined(CFG_cups_exclusive)
-    if( delay < 0 ) {
-        delay = CUPS_RESYNC_INTV/1000000;
+    if( delay < 0 ) { // 如果延迟时间为负数
+        delay = CUPS_RESYNC_INTV/1000000; // 使用默认重新同步间隔
     }
-    LOG(MOD_CUP|INFO, "Starting a CUPS session in %d seconds.", delay);
-    sys_inState(SYSIS_CUPS_INTERACT);
-    CUPS = cups_ini();
-    rt_clrTimer(&cups_sync_tmr);
-    rt_setTimerCb(&CUPS->timeout, rt_seconds_ahead(delay), delayedCUPSstart);
+    LOG(MOD_CUP|INFO, "Starting a CUPS session in %d seconds.", delay); // 记录CUPS会话启动延迟日志
+    sys_inState(SYSIS_CUPS_INTERACT); // 设置系统状态为CUPS交互中
+    CUPS = cups_ini(); // 初始化CUPS实例
+    rt_clrTimer(&cups_sync_tmr); // 清除现有的同步定时器
+    rt_setTimerCb(&CUPS->timeout, rt_seconds_ahead(delay), delayedCUPSstart); // 设置延迟启动定时器
 }
 
-
+// 初始化CUPS子系统
 void sys_iniCUPS () {
-    rt_iniTimer(&cups_sync_tmr, cups_ondone);
+    rt_iniTimer(&cups_sync_tmr, cups_ondone); // 初始化CUPS同步定时器，设置完成回调函数
 }
 
 void sys_clearCUPS () {

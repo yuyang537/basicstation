@@ -1019,40 +1019,42 @@ static int parse_opt (int key, char* arg, struct argp_state* state) {
 struct argp argp = { options, parse_opt, "", NULL, NULL, NULL, NULL };
 
 
+// 进一步初始化系统的各个子系统
 static void startupMaster2 (tmr_t* tmr) {
 #if !defined(CFG_no_rmtsh)
-    rt_addFeature("rmtsh");
+    rt_addFeature("rmtsh"); // 添加远程shell特性
 #endif
 #if defined(CFG_prod)
-    rt_addFeature("prod");  // certain development/test/debug features not accepted
+    rt_addFeature("prod");  // 添加生产环境特性，某些开发/测试/调试特性不被接受
 #endif
-    sys_enableCmdFIFO(makeFilepath("~/cmd",".fifo",NULL,0));
+    sys_enableCmdFIFO(makeFilepath("~/cmd",".fifo",NULL,0)); // 启用命令FIFO，用于进程间通信
     if( gpsDevice ) {
-        rt_addFeature("gps");
-        sys_enableGPS(gpsDevice);
+        rt_addFeature("gps"); // 如果存在GPS设备，添加GPS特性
+        sys_enableGPS(gpsDevice); // 启用GPS设备
     }
-    sys_iniTC();
-    sys_startTC();
-    sys_iniCUPS();
-    sys_triggerCUPS(0);
-    sys_iniWeb();
+    sys_iniTC(); // 初始化时间同步子系统
+    sys_startTC(); // 启动时间同步子系统
+    sys_iniCUPS(); // 初始化CUPS（配置和更新服务器）子系统
+    sys_triggerCUPS(0); // 触发CUPS子系统
+    sys_iniWeb(); // 初始化Web子系统
 }
 
+// 启动主进程的初始化函数
 static void startupMaster (tmr_t* tmr) {
-    sys_startLogThread();
+    sys_startLogThread(); // 启动一个独立的日志线程
     if( getenv("STATION_SELFTESTS") ) {
-        selftests();
+        selftests(); // 如果环境变量 STATION_SELFTESTS 存在，执行自检功能
         // NOT REACHED
     }
-    // Kill off any old processes - create a file with my pid
+    // 终止任何旧的进程 - 创建一个包含当前进程ID的文件
     writePid();
-    // If there is an update pending - run it
+    // 如果有待处理的更新 - 执行更新
     sys_runUpdate();
-    ral_ini();
-    atexit(leds_off);
-    // Wait until slaves are up
+    ral_ini(); // 初始化无线电抽象层，准备与无线电硬件进行通信
+    atexit(leds_off); // 注册程序退出时关闭LED的函数
+    // 等待从进程启动
     //startupMaster2(tmr);
-    rt_setTimerCb(tmr, rt_millis_ahead(200), startupMaster2); 
+    rt_setTimerCb(tmr, rt_millis_ahead(200), startupMaster2); // 设置一个定时器，在200毫秒后调用startupMaster2函数
 }
 
 

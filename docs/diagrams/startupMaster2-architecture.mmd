@@ -1,0 +1,53 @@
+graph TB
+    subgraph "startupMaster2 子系统初始化架构"
+        A["startupMaster2 函数"] --> B["特性管理模块"]
+        A --> C["通信子系统"]
+        A --> D["GPS子系统"]
+        A --> E["时间同步子系统"]
+        A --> F["CUPS子系统"]
+        A --> G["Web子系统"]
+    end
+    
+    subgraph "特性管理模块"
+        B --> B1["远程Shell特性 rmtsh"]
+        B --> B2["生产环境特性 prod"]
+    end
+    
+    subgraph "通信子系统"
+        C --> C1["命令FIFO"]
+        C1 --> C2["进程间通信管道"]
+        C2 --> C3["命令接收处理"]
+    end
+    
+    subgraph "GPS子系统"
+        D --> D1{"GPS设备检测"}
+        D1 -->|存在| D2["GPS特性激活"]
+        D1 -->|不存在| D3["跳过GPS初始化"]
+        D2 --> D4["GPS设备启用"]
+    end
+    
+    subgraph "时间同步子系统"
+        E --> E1["TC初始化 sys_iniTC"]
+        E1 --> E2["TC启动 sys_startTC"]
+        E2 --> E3["时间同步服务"]
+    end
+    
+    subgraph "CUPS子系统"
+        F --> F1["CUPS初始化 sys_iniCUPS"]
+        F1 --> F2["CUPS触发 sys_triggerCUPS"]
+        F2 --> F3["配置更新服务"]
+    end
+    
+    subgraph "Web子系统"
+        G --> G1["Web服务初始化"]
+        G1 --> G2["HTTP服务器"]
+        G2 --> G3["Web管理接口"]
+    end
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style C fill:#fff3e0
+    style D fill:#e8f5e8
+    style E fill:#fce4ec
+    style F fill:#e0f2f1
+    style G fill:#fff8e1 
