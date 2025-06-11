@@ -1,58 +1,49 @@
 /*
- * --- Revised 3-Clause BSD License ---
- * Copyright Semtech Corporation 2022. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- *
- *     * Redistributions of source code must retain the above copyright notice,
- *       this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright notice,
- *       this list of conditions and the following disclaimer in the documentation
- *       and/or other materials provided with the distribution.
- *     * Neither the name of the Semtech corporation nor the names of its
- *       contributors may be used to endorse or promote products derived from this
- *       software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL SEMTECH CORPORATION. BE LIABLE FOR ANY DIRECT,
- * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SYS_LINUX - Linux平台系统接口头文件
+ * ===================================
+ * 功能：BasicStation在Linux平台的系统特定功能实现
+ * 核心：日志管理、进程控制、文件操作、设备管理
  */
 
 #ifndef _sys_linux_h_
 #define _sys_linux_h_
 
-#include "rt.h"
+#include "rt.h"  // 运行时基础类型
 
-#define EXIT_NOP          6
-#define FATAL_GENERIC    30
-#define FATAL_PTHREAD    31
-#define FATAL_NOLOGGING  32
-#define FATAL_MAX        40
+// 退出码定义
+#define EXIT_NOP          6   // 无操作退出：程序正常退出但无实际操作
+#define FATAL_GENERIC    30   // 一般致命错误：通用的致命错误退出码
+#define FATAL_PTHREAD    31   // 线程致命错误：pthread相关致命错误
+#define FATAL_NOLOGGING  32   // 日志致命错误：日志系统初始化失败
+#define FATAL_MAX        40   // 最大致命错误码：致命错误码的上限
 
+/**
+ * struct logfile - 日志文件配置结构
+ * 功能：定义日志文件的路径、大小和轮转配置
+ */
 struct logfile {
-    str_t path;
-    int   size;
-    int   rotate;
+    str_t path;         // 日志路径：日志文件的完整路径
+    int   size;         // 文件大小：单个日志文件的最大字节数
+    int   rotate;       // 轮转数量：保留的历史日志文件数量
 };
 
-extern str_t  sys_slaveExec;  // template to start slave processes
+extern str_t  sys_slaveExec;  // 子进程模板：启动子进程的命令行模板
 
-void     sys_startLogThread ();
-void     sys_iniLogging (struct logfile* lf, int captureStdio);
-void     sys_flushLog ();
-int      sys_findPids (str_t device, u4_t* pids, int n_pids);
-dbuf_t   sys_checkFile (str_t filename);
-void     sys_writeFile (str_t filename, dbuf_t* data);
-void     sys_startupSlave (int rdfd, int wrfd);
-int      sys_enableGPS (str_t device);
-void     sys_enableCmdFIFO (str_t file);
+// 日志管理API
+void     sys_startLogThread ();                        // 启动日志线程：创建异步日志处理线程
+void     sys_iniLogging (struct logfile* lf, int captureStdio);  // 初始化日志：配置日志文件和标准IO捕获
+void     sys_flushLog ();                              // 刷新日志：强制写入所有缓存的日志数据
+
+// 进程管理API
+int      sys_findPids (str_t device, u4_t* pids, int n_pids);  // 查找进程：根据设备名查找相关进程PID
+void     sys_startupSlave (int rdfd, int wrfd);        // 启动子进程：以指定文件描述符启动RAL子进程
+
+// 文件操作API
+dbuf_t   sys_checkFile (str_t filename);               // 检查文件：读取文件内容到缓冲区
+void     sys_writeFile (str_t filename, dbuf_t* data); // 写入文件：将缓冲区数据写入文件
+
+// 设备管理API
+int      sys_enableGPS (str_t device);                 // 启用GPS：初始化指定GPS设备
+void     sys_enableCmdFIFO (str_t file);              // 启用命令FIFO：初始化命令管道接口
 
 #endif // _sys_linux_h_

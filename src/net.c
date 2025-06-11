@@ -27,215 +27,268 @@
  */
 
 
-#include "s2conf.h"
-#include "sys.h"
-#include "uj.h"
-#include "ws.h"
-#include "http.h"
-#include "httpd.h"
-#include "tls.h"
-#include "kwcrc.h"
+// 文件功能：BasicStation网络通信层 - 核心网络协议实现
+// 作用：为BasicStation提供完整的网络通信基础设施
+// 核心功能：
+// 1. WebSocket协议 - 全双工通信、帧解析、自动重连
+// 2. HTTP客户端/服务器 - RESTful API、文件服务、代理功能  
+// 3. TLS安全传输 - 证书验证、加密通信、安全握手
+// 4. URI解析 - 统一资源标识符解析和验证
+// 5. 连接管理 - 异步IO、状态机、超时处理
+// 6. 缓冲区管理 - 高效的读写缓冲区操作
 
+#include "s2conf.h"         // S2配置管理：系统参数和配置选项
+#include "sys.h"            // 系统抽象层：时间、IO、文件等底层接口
+#include "uj.h"             // μJSON解析器：JSON消息编解码
+#include "ws.h"             // WebSocket协议：WebSocket连接管理
+#include "http.h"           // HTTP协议：HTTP客户端接口
+#include "httpd.h"          // HTTP服务器：HTTP服务端接口
+#include "tls.h"            // TLS安全层：加密传输和证书管理
+#include "kwcrc.h"          // 关键字CRC：快速字符串匹配
+
+// MIME类型映射表：文件扩展名到Content-Type的映射
+// 用于HTTP服务器正确设置响应头的Content-Type字段
 str_t const SUFFIX2CT[] = {
-    "txt",  "text/plain",
-    "htm",  "text/html",
-    "html", "text/html",
-    "css",  "text/css",
-    "png",  "image/png",
-    "js",   "application/javascript",
-    "json", "application/json",
-    NULL, NULL
+    "txt",  "text/plain",               // 纯文本文件
+    "htm",  "text/html",                // HTML文档
+    "html", "text/html",                // HTML文档（完整扩展名）
+    "css",  "text/css",                 // CSS样式表
+    "png",  "image/png",                // PNG图片
+    "js",   "application/javascript",   // JavaScript脚本
+    "json", "application/json",         // JSON数据
+    NULL, NULL                          // 结束标记
 };
 
 
-// --------------------------------------------------------------------------------
-//
-// HTTP parsing stuff
-//
-// --------------------------------------------------------------------------------
+// ================================================================================
+// HTTP协议解析工具函数
+// 功能：解析HTTP响应状态行、URI解析、内容长度处理等
+// ================================================================================
 
+// 函数功能：从HTTP响应头中提取状态文本消息
+// 参数说明：hdr - 包含HTTP响应头的缓冲区
+// 返回值：包含状态文本的dbuf_t结构（如"OK", "Not Found"等）
+// 调用时机：收到HTTP响应后解析状态消息用于错误处理或日志记录
 dbuf_t http_statusText (dbuf_t* hdr) {
-    char* s1 = strchr(hdr->buf, ' ');
-    s1 = strchr(s1?s1+1:hdr->buf, ' ');
-    char* s2 = strchr(hdr->buf, '\r');
-    dbuf_t msg = {.buf=hdr->buf, .bufsize=0, .pos=0 };
-    if( s1 && s2 ) {
-        msg.buf = s1+1;
-        msg.bufsize = s2-s1-1;
+    char* s1 = strchr(hdr->buf, ' ');       // 查找"HTTP/1.1"后的第一个空格
+    s1 = strchr(s1?s1+1:hdr->buf, ' ');     // 查找状态码后的第二个空格（状态文本开始）
+    char* s2 = strchr(hdr->buf, '\r');      // 查找状态行结束的回车符
+    dbuf_t msg = {.buf=hdr->buf, .bufsize=0, .pos=0 };  // 初始化返回的消息缓冲区
+    if( s1 && s2 ) {                        // 如果成功找到状态文本的边界
+        msg.buf = s1+1;                     // 设置状态文本的起始位置
+        msg.bufsize = s2-s1-1;              // 计算状态文本的长度
     }
-    return msg;
+    return msg;                             // 返回状态文本缓冲区（可能为空）
 }
 
+// 函数功能：检查URI是否以指定的协议方案开头（忽略大小写）
+// 参数说明：uri - 要检查的URI字符串，scheme - 协议方案（如"http", "ws"等）
+// 返回值：如果匹配返回方案长度，否则返回0
+// 调用时机：解析URI时验证协议类型，支持HTTP/HTTPS/WS/WSS等协议
 int uri_isScheme(const char* uri, const char* scheme) {
-    int n = http_icaseCmp(uri, scheme);
-    return n && uri[n] == ':' ? n : 0;
+    int n = http_icaseCmp(uri, scheme);     // 忽略大小写比较URI开头与方案
+    return n && uri[n] == ':' ? n : 0;      // 检查是否以冒号结尾（如"http:"）
 }
 
+// 函数功能：从缓冲区中读取下一个字符并推进位置指针
+// 参数说明：b - 输入缓冲区指针
+// 返回值：当前字符的ASCII码，到达末尾时返回0
+// 调用时机：URI解析过程中逐字符扫描输入
 static int nextChar (dbuf_t* b) {
-    return b->pos >= b->bufsize ? 0 : b->buf[b->pos++];
+    return b->pos >= b->bufsize ? 0 : b->buf[b->pos++];  // 返回当前字符并推进位置
 }
 
+// 函数功能：解析URI字符串，提取协议、主机、端口、路径等组件
+// 参数说明：b - 包含URI的缓冲区，u - 存储解析结果的结构体，skipSchema - 是否跳过协议解析
+// 返回值：解析成功返回1，失败返回0
+// 调用时机：处理HTTP请求、WebSocket连接时解析目标URI
 int uri_parse (dbuf_t* b, struct uri_info* u, int skipSchema) {
     int c;
+    // 解析协议方案部分（如"http:", "ws:"）
     if( !skipSchema ) {
         do {
-            if( (c = nextChar(b)) == 0 )
-                return 0;
-            if( c ==':' ) {
-                u->schemeEnd = b->pos-1;
-                if( nextChar(b) != '/' || nextChar(b) != '/' )
-                    return 0;
-                break;
+            if( (c = nextChar(b)) == 0 )        // 到达字符串末尾
+                return 0;                       // 解析失败，URI格式不完整
+            if( c ==':' ) {                     // 找到协议分隔符
+                u->schemeEnd = b->pos-1;        // 记录协议结束位置
+                if( nextChar(b) != '/' || nextChar(b) != '/' )  // 期望"//"
+                    return 0;                   // 格式错误，缺少"//"
+                break;                          // 协议解析完成
             }
         } while(1);
     } else {
-        u->schemeEnd = 0;
+        u->schemeEnd = 0;                       // 跳过协议，设置为0
     }
-    u->hostportBeg = b->pos;
-    c = nextChar(b);
+    
+    // 开始解析主机和端口部分
+    u->hostportBeg = b->pos;                    // 记录主机+端口部分的开始位置
+    c = nextChar(b);                            // 获取主机部分的第一个字符
+    
     if( c=='[' ) {
-        // IPv6 hostname [200::1]:port
-        u->hostBeg = b->pos;
+        // IPv6地址格式：[2001:db8::1]:8080
+        u->hostBeg = b->pos;                    // IPv6地址内容开始位置
         do {
-            c = nextChar(b);
-            if( c==0 ) return 0;
-            if( c==']' ) {
-                u->hostEnd = (u->hostportEnd = b->pos-1)-1;
-                break;
+            c = nextChar(b);                    // 逐字符扫描IPv6地址
+            if( c==0 ) return 0;                // 意外结束，格式错误
+            if( c==']' ) {                      // 找到IPv6地址结束标记
+                u->hostEnd = (u->hostportEnd = b->pos-1)-1;  // 设置主机结束位置
+                break;                          // IPv6主机部分解析完成
             }
         } while(1);
-        c = nextChar(b);
+        c = nextChar(b);                        // 读取']'后的字符（可能是':'或路径）
     } else {
-        u->hostBeg = u->hostportBeg;
+        // IPv4地址或域名格式：example.com:8080
+        u->hostBeg = u->hostportBeg;            // 主机开始位置即hostport开始位置
         do {
-            if( c==0 ) {
-                u->hostEnd = b->pos;
-                break;
+            if( c==0 ) {                        // 到达字符串末尾
+                u->hostEnd = b->pos;            // 设置主机结束位置
+                break;                          // 主机解析完成
             }
-            if( c==':' || c=='/' ) {
-                u->hostEnd = b->pos-1;
-                break;
+            if( c==':' || c=='/' ) {            // 遇到端口分隔符或路径开始
+                u->hostEnd = b->pos-1;          // 设置主机结束位置
+                break;                          // 主机解析完成
             }
-            c = nextChar(b);
+            c = nextChar(b);                    // 继续读取主机字符
         } while(1);
-        u->hostportEnd = u->hostEnd;
+        u->hostportEnd = u->hostEnd;            // 暂时设置hostport结束位置
     }
-    if( u->hostBeg == u->hostEnd )
-        return 0;  // hostname is empty
-    if( c==':' ) {
-        u->portBeg = b->pos;
+    
+    if( u->hostBeg == u->hostEnd )              // 检查主机名是否为空
+        return 0;  // hostname is empty        // 主机名为空，解析失败
+    
+    // 解析端口部分（可选）
+    if( c==':' ) {                              // 找到端口分隔符
+        u->portBeg = b->pos;                    // 记录端口开始位置
         do {
-            c = nextChar(b);
-            if( c==0 ) {
-                u->portEnd = b->pos;
-                break;
+            c = nextChar(b);                    // 逐字符读取端口号
+            if( c==0 ) {                        // 到达字符串末尾
+                u->portEnd = b->pos;            // 设置端口结束位置
+                break;                          // 端口解析完成
             }
-            if( c=='/' ) {
-                u->portEnd = b->pos-1;
-                break;
+            if( c=='/' ) {                      // 遇到路径开始标记
+                u->portEnd = b->pos-1;          // 设置端口结束位置
+                break;                          // 端口解析完成
             }
         } while(1);
-        if( u->portBeg == u->portEnd )
-            return 0;  // port is empty although : is present
-        u->hostportEnd = u->portEnd;
+        if( u->portBeg == u->portEnd )          // 检查端口是否为空
+            return 0;  // port is empty although : is present  // 有':'但端口为空
+        u->hostportEnd = u->portEnd;            // 更新hostport结束位置
     } else {
-        u->portBeg = u->portEnd = 0;
+        u->portBeg = u->portEnd = 0;            // 没有端口，设置为0
     }
 
-    if( c=='/' ) {
-        u->pathBeg = b->pos-1;
+    // 解析路径部分（可选）
+    if( c=='/' ) {                              // 找到路径开始标记
+        u->pathBeg = b->pos-1;                  // 记录路径开始位置（包含'/'）
         do {
-            c = nextChar(b);
-            if( c==0 ) {
-                u->pathEnd = b->pos;
-                break;
+            c = nextChar(b);                    // 逐字符读取路径
+            if( c==0 ) {                        // 到达字符串末尾
+                u->pathEnd = b->pos;            // 设置路径结束位置
+                break;                          // 路径解析完成
             }
-            if( c==' ' || c=='\t' || c=='\r' || c=='\n' ) {
-                u->pathEnd = b->pos-1;
-                break;
+            if( c==' ' || c=='\t' || c=='\r' || c=='\n' ) {  // 遇到空白字符
+                u->pathEnd = b->pos-1;          // 设置路径结束位置
+                break;                          // 路径解析完成
             }
         } while(1);
     } else {
-        u->pathBeg = u->pathEnd = 0;
+        u->pathBeg = u->pathEnd = 0;            // 没有路径，设置为0
     }
-    return 1;
+    return 1;                                   // 解析成功
 }
 
-// Commonly used URI parsing - no path
+// 函数功能：解析主机+端口格式的URI，用于WebSocket/HTTP连接
+// 参数说明：uri - 要解析的URI字符串，scheme - 期望的协议(如"ws", "http")
+//          host/port - 输出缓冲区，hostlen/portlen - 缓冲区长度
+// 返回值：URI_TCP(普通连接)、URI_TLS(安全连接)、URI_BAD(解析失败)
+// 调用时机：建立WebSocket/HTTP连接时验证和解析目标地址
 int uri_checkHostPortUri (const char* uri,
                           const char* scheme,
                           char* host, int hostlen,
                           char* port, int portlen) {
-    assert(hostlen > 0 && portlen > 0);
-    host[0] = port[0] = 0;
-    int n = http_icaseCmp(uri, scheme);
-    int tls = (n && uri[n]=='s');
-    if( n==0 || uri[n+tls] != ':' ) {
+    assert(hostlen > 0 && portlen > 0);        // 确保输出缓冲区有效
+    host[0] = port[0] = 0;                     // 初始化输出缓冲区为空字符串
+    int n = http_icaseCmp(uri, scheme);        // 检查URI是否以指定协议开头
+    int tls = (n && uri[n]=='s');              // 检查是否为安全版本(如wss, https)
+    if( n==0 || uri[n+tls] != ':' ) {          // 验证协议格式是否正确
         LOG(MOD_AIO|ERROR, "Malformed URI - expecting %s://.. or %ss://.. but found: %s", scheme, scheme, uri);
-        return URI_BAD;
+        return URI_BAD;                        // 协议格式错误
     }
-    struct uri_info u;
-    dbuf_t b;
-    dbuf_str(b, uri);
-    int ok = uri_parse(&b, &u, 0);
-    if( !ok || u.pathBeg != 0 || u.portBeg==0 ) {
+    struct uri_info u;                         // 创建URI解析结果结构
+    dbuf_t b;                                  // 创建输入缓冲区
+    dbuf_str(b, uri);                          // 将URI字符串包装为dbuf_t
+    int ok = uri_parse(&b, &u, 0);             // 执行完整的URI解析
+    if( !ok || u.pathBeg != 0 || u.portBeg==0 ) {  // 检查解析结果是否符合要求
         LOG(MOD_AIO|ERROR, "Malformed URI - expecting %s(s)://host:port (no path, port mandatory) but found: %s", scheme, uri);
-        return URI_BAD;
+        return URI_BAD;                        // 格式不符合主机+端口要求
     }
-    int hlen = u.hostEnd-u.hostBeg;
-    int plen = u.portEnd-u.portBeg;
-    if( hostlen <= hlen || portlen <= plen ) {
+    int hlen = u.hostEnd-u.hostBeg;            // 计算主机名长度
+    int plen = u.portEnd-u.portBeg;            // 计算端口号长度
+    if( hostlen <= hlen || portlen <= plen ) { // 检查输出缓冲区是否足够大
         LOG(MOD_AIO|ERROR, "Malformed URI - host/port too big (max %d/%d): %s", hostlen, portlen, uri);
-        return URI_BAD;
+        return URI_BAD;                        // 缓冲区空间不足
     }
-    memcpy(host, uri+u.hostBeg, hlen); host[hlen] = 0;
-    memcpy(port, uri+u.portBeg, plen); port[plen] = 0;
-    return tls ? URI_TLS : URI_TCP;
+    memcpy(host, uri+u.hostBeg, hlen); host[hlen] = 0;  // 复制主机名到输出缓冲区
+    memcpy(port, uri+u.portBeg, plen); port[plen] = 0;  // 复制端口号到输出缓冲区
+    return tls ? URI_TLS : URI_TCP;            // 根据是否为安全连接返回类型
 }
 
 
+// 函数功能：跳过HTTP头部中的空白字符，支持行继续
+// 参数说明：p - 当前字符指针
+// 返回值：跳过空白字符后的位置指针
+// 调用时机：解析HTTP头部字段值时去除前导空白
 char* http_skipWsp (char* p) {
     while(1) {
-        int c = p[0];
-        if( c==' ' || c=='\t' ) {
-            p += 1;
-            continue;
+        int c = p[0];                           // 获取当前字符
+        if( c==' ' || c=='\t' ) {               // 普通空白字符（空格、制表符）
+            p += 1;                             // 跳过空白字符
+            continue;                           // 继续检查下一个字符
         }
-        if( c=='\r' && p[1]=='\n' && (p[2]==' ' || p[2]=='\t') ) {  // continuation line
-            p += 3;
-            continue;
+        if( c=='\r' && p[1]=='\n' && (p[2]==' ' || p[2]=='\t') ) {  // HTTP行继续格式
+            p += 3;                             // 跳过CRLF+空白的行继续标记
+            continue;                           // 继续处理后续字符
         }
-        return p;
+        return p;                               // 返回非空白字符的位置
     }
 }
 
-
+// 函数功能：解码HTTP URL编码字符（%XX格式）
+// 参数说明：p - 字符指针的指针，用于更新解析位置
+// 返回值：解码后的字符值
+// 调用时机：处理HTTP请求中的URL编码字符时
 int http_unquote (char** p) {
-    char* s = *p;
-    int c = *s;
-    if( c == '%' ) {
-        int v = rt_hexDigit(s[1]) | rt_hexDigit(s[2]);
-        if( v >= 0 ) {
-            *p = s+3;
-            return v;
+    char* s = *p;                               // 获取当前字符串位置
+    int c = *s;                                 // 读取当前字符
+    if( c == '%' ) {                            // 检查是否为URL编码开始
+        int v = rt_hexDigit(s[1]) | rt_hexDigit(s[2]);  // 解析两位十六进制数
+        if( v >= 0 ) {                          // 如果是有效的十六进制编码
+            *p = s+3;                           // 更新指针位置跳过%XX
+            return v;                           // 返回解码后的字符值
         }
-        // Bad HEX - assume it's a literal %
+        // Bad HEX - assume it's a literal %     // 无效编码，按字面量%处理
     }
-    *p = s+1;
-    return c;
+    *p = s+1;                                   // 更新指针位置到下一个字符
+    return c;                                   // 返回原始字符
 }
 
-
+// 函数功能：从字符串中读取十进制数值
+// 参数说明：p - 字符串指针
+// 返回值：解析得到的十进制数值
+// 调用时机：解析HTTP头部中的数字字段（如Content-Length）
 int http_readDec (char* p) {
-    return rt_readDec((str_t*)&p);
+    return rt_readDec((str_t*)&p);              // 调用运行时的十进制解析函数
 }
 
-
+// 函数功能：从HTTP状态行中提取状态码
+// 参数说明：p - 指向HTTP状态行的字符串指针
+// 返回值：HTTP状态码（如200, 404等），格式错误时返回-1
+// 调用时机：处理HTTP响应时解析状态码用于决定后续处理
 int http_statusCode (char* p) {
-    // Status line starts with "HTTP/1.x NNN"
-    if( p[4] != '/' || p[5] != '1' || p[6] != '.' || p[8] != ' ')
-        return -1;
-    return http_readDec(p+9);
+    // Status line starts with "HTTP/1.x NNN"  // 状态行格式检查
+    if( p[4] != '/' || p[5] != '1' || p[6] != '.' || p[8] != ' ')  // 验证"HTTP/1.x "格式
+        return -1;                              // 格式错误，返回-1
+    return http_readDec(p+9);                   // 解析状态码数字部分
 }
 
 // Check if what is found at p ignoring case (what must be lower case)

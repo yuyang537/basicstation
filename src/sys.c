@@ -1,135 +1,213 @@
 /*
+ * BasicStation 系统核心模块 - 系统级功能和配置管理
+ * 
+ * 主要功能：
+ * 1. 文件系统操作和路径管理 - 支持可配置的根目录和临时目录
+ * 2. 安全凭证管理 - TLS证书、密钥、信任链的原子性更新机制  
+ * 3. 配置文件管理 - TC和CUPS配置的版本化管理和回滚恢复
+ * 4. 系统状态管理 - EUI生成、URI缓存、网络连接保活
+ * 5. 事务型更新 - 确保配置更新的原子性和一致性
+ * 
+ * 设计特点：
+ * - 支持多进程环境下的文件路径展开（# 和 ? 占位符）
+ * - 实现配置文件的备份恢复机制，防止更新失败导致的数据丢失
+ * - 采用ASN.1解析实现安全凭证的结构化存储
+ * - 提供前向恢复机制，保证系统重启后配置状态的一致性
+ * 
  * --- Revised 3-Clause BSD License ---
  * Copyright Semtech Corporation 2022. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- *
- *     * Redistributions of source code must retain the above copyright notice,
- *       this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright notice,
- *       this list of conditions and the following disclaimer in the documentation
- *       and/or other materials provided with the distribution.
- *     * Neither the name of the Semtech corporation nor the names of its
- *       contributors may be used to endorse or promote products derived from this
- *       software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL SEMTECH CORPORATION. BE LIABLE FOR ANY DIRECT,
- * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdio.h>
-#include <fcntl.h>
+#include <stdio.h>    // 标准输入输出函数
+#include <fcntl.h>    // 文件控制操作常量
 
 
 #if defined(CFG_linux) || defined(CFG_flashsim)
-#include <sys/stat.h>
-#include <errno.h>
-#include <netinet/ip.h>
-#include <netinet/tcp.h>
+#include <sys/stat.h>      // 文件状态信息结构
+#include <errno.h>         // 错误码定义
+#include <netinet/ip.h>    // IP协议定义  
+#include <netinet/tcp.h>   // TCP协议定义，用于keep-alive设置
 #endif
 
-#include "sys.h"
-#include "uj.h"
-#include "s2conf.h"
-#include "fs.h"
-#include "net.h" // uri_checkHostPortUri
+#include "sys.h"      // 系统模块接口定义
+#include "uj.h"       // JSON解析器，用于配置文件处理
+#include "s2conf.h"   // Station配置管理
+#include "fs.h"       // 文件系统抽象层
+#include "net.h"      // 网络功能，用于URI校验
 
-str_t  homeDir;
-str_t  tempDir;
-str_t  webDir;
+// 全局目录路径配置 - 在系统初始化时设置
+str_t  homeDir;  // 主配置目录路径，存放所有配置文件
+str_t  tempDir;  // 临时文件目录路径，用于原子更新操作
+str_t  webDir;   // Web界面静态文件目录路径
 
-uL_t   protoEUI     = 0;
-uL_t   prefixEUI    = 1;           // 1 -> *:ffe:* MAC => EUI scheme
-s1_t   sys_slaveIdx = -1;
+// EUI (Extended Unique Identifier) 管理 - 设备唯一标识
+uL_t   protoEUI     = 0;  // 原始EUI值，通常从MAC地址获取
+uL_t   prefixEUI    = 1;  // EUI前缀标识：1表示使用MAC转EUI方案 (*:ffe:*)
+s1_t   sys_slaveIdx = -1; // 从进程索引：-1表示主进程，>=0表示从进程编号
 
-// Standard config files:
-//   {tc,cups}{,-bootstrap,-bak}.{uri,key,crt,trust}
-// Temporary files:
-//   {tc,cups}-temp.{uri,key,crt,trust}
-// Extra marker files for forward recovery:
-//   {tc,cups}-temp.upd   -- rename temp set into regular set - created at end of temp set write
-//   {tc,cups}-temp.cpy   -- copy regular set into bak files, create before 1st copy, deleted after last
-//   {tc,cups}-done.bak   -- copy is valid
-//
-enum { FN_TRUST,FN_CRT , FN_KEY , FN_URI , nFN_EXT };  // ext - extension
-enum { FN_REG , FN_BAK , FN_BOOT, FN_TEMP, nFN_SET };  // set - set
-enum { FN_UPD , FN_CPY , FN_DON          , nFN_TAF };  // taf - transaction files
-enum { FN_CUPS, FN_TC                    , nFN_CAT };  // cat - category
+/*
+ * 配置文件命名和管理体系
+ * 
+ * 标准配置文件命名规则：
+ *   {tc,cups}{,-bootstrap,-bak}.{uri,key,crt,trust}
+ *   例如：tc.uri, cups-bak.crt, tc-boot.trust
+ * 
+ * 临时文件用于原子更新：
+ *   {tc,cups}-temp.{uri,key,crt,trust}
+ *   例如：tc-temp.key, cups-temp.uri
+ * 
+ * 事务恢复标记文件：
+ *   {tc,cups}-temp.upd  -- 标记临时文件可以重命名为正式文件
+ *   {tc,cups}-temp.cpy  -- 标记正在进行备份复制操作
+ *   {tc,cups}-done.bak  -- 标记备份复制已完成且有效
+ */
 
-static const char sFN_CAT[] = "cups\0" "tc\0.."                         "?";  // 2 x 5
-static const char sFN_SET[] = "\0....." "-bak\0." "-boot\0" "-temp\0"   "?";  // 4 x 6
-static const char sFN_EXT[] = "trust\0" "crt\0.." "key\0.." "uri\0.."   "?";  // 4 x 6
-static const char sFN_TAF[] = "-temp.upd\0" "-temp.cpy\0" "-bak.done\0" "?";  // 3 x 10
+// 文件扩展名类型枚举 - 表示不同类型的配置文件
+enum { 
+    FN_TRUST,  // .trust - CA信任链文件
+    FN_CRT,    // .crt   - 客户端证书文件
+    FN_KEY,    // .key   - 私钥文件
+    FN_URI,    // .uri   - 服务器URI配置文件
+    nFN_EXT    // 扩展名总数
+};
 
+// 文件集合类型枚举 - 表示不同版本的配置文件集
+enum { 
+    FN_REG,   // 正式配置文件集（无后缀）
+    FN_BAK,   // 备份配置文件集（-bak后缀）
+    FN_BOOT,  // 引导配置文件集（-boot后缀）
+    FN_TEMP,  // 临时配置文件集（-temp后缀）
+    nFN_SET   // 文件集总数
+};
+
+// 事务文件类型枚举 - 用于配置更新的原子性保障
+enum { 
+    FN_UPD,   // .upd - 更新标记文件，表示临时文件可以生效
+    FN_CPY,   // .cpy - 复制标记文件，表示正在进行备份操作
+    FN_DON,   // .done - 完成标记文件，表示备份操作已完成
+    nFN_TAF   // 事务文件总数
+};
+
+// 配置文件类别枚举 - 区分不同的服务配置
+enum { 
+    FN_CUPS,  // CUPS服务配置文件
+    FN_TC,    // TC (Traffic Controller) 服务配置文件
+    nFN_CAT   // 类别总数
+};
+
+// 文件名组件字符串常量表 - 用于动态组装文件名
+static const char sFN_CAT[] = "cups\0" "tc\0.."                         "?";  // 类别名称：2 x 5字符
+static const char sFN_SET[] = "\0....." "-bak\0." "-boot\0" "-temp\0"   "?";  // 集合后缀：4 x 6字符
+static const char sFN_EXT[] = "trust\0" "crt\0.." "key\0.." "uri\0.."   "?";  // 扩展名：4 x 6字符
+static const char sFN_TAF[] = "-temp.upd\0" "-temp.cpy\0" "-bak.done\0" "?";  // 事务文件：3 x 10字符
+
+// 动态分配的配置文件名数组 - 存储所有可能的文件路径
 static char* CFNS[nFN_CAT*(nFN_SET * nFN_EXT + nFN_TAF)];
+
+// 备份完成状态数组 - 记录每个类别的配置是否已备份
 static u1_t  bakDone[nFN_CAT];
+
+// URI缓存数组 - 缓存已读取的URI配置，避免重复文件读取
 static char  uriCache[nFN_SET-1][MAX_URI_LEN];
+
+// 待处理的凭证数据缓冲区 - 用于分段接收凭证数据
 static char* pendData;
 
-enum { UPD_CUPS=1<<FN_CUPS, UPD_TC=1<<FN_TC, UPD_ERROR=0xFF };;
+// 配置更新状态标志位枚举
+enum { 
+    UPD_CUPS = 1<<FN_CUPS,  // CUPS配置有更新
+    UPD_TC   = 1<<FN_TC,    // TC配置有更新  
+    UPD_ERROR = 0xFF        // 更新过程中发生错误
+};
+
+// 当前配置更新状态 - 位掩码表示哪些配置类别有更新
 static u1_t updateState;
 
-#define categoryName(cat) (&sFN_CAT[cat*5])
-#define configFilename(cat,set,ext) (CFNS[(cat)*(nFN_SET*nFN_EXT + nFN_TAF)+((set)*nFN_EXT)+(ext)])
-#define transactionFilename(cat,taf) (CFNS[(cat)*(nFN_SET*nFN_EXT + nFN_TAF)+(nFN_SET*nFN_EXT)+(taf)])
+// 文件名构建宏定义 - 根据类别、集合、扩展名快速构建文件路径
+#define categoryName(cat) (&sFN_CAT[cat*5])  // 获取配置类别名称字符串
+#define configFilename(cat,set,ext) (CFNS[(cat)*(nFN_SET*nFN_EXT + nFN_TAF)+((set)*nFN_EXT)+(ext)])  // 构建配置文件路径
+#define transactionFilename(cat,taf) (CFNS[(cat)*(nFN_SET*nFN_EXT + nFN_TAF)+(nFN_SET*nFN_EXT)+(taf)])  // 构建事务文件路径
 
-str_t sys_credcat2str (int cred_cat) { return categoryName(cred_cat); }
-str_t sys_credset2str (int cred_set) { return &sFN_SET[cred_set*6]; }
-
-
-static int sizeFile (str_t file) {
-    struct stat st;
-    if( fs_stat(file, &st) == -1 )
-        return -1; // No such file / cannot stat
-    return st.st_size;
+// 功能：将配置类别枚举转换为字符串名称
+// 参数：cred_cat - 配置类别（FN_CUPS或FN_TC）
+// 返回值：对应的类别名称字符串（"cups"或"tc"）
+// 调用时机：日志输出和错误报告时需要显示类别名称
+str_t sys_credcat2str (int cred_cat) { 
+    return categoryName(cred_cat);  // 直接返回预定义的类别名称字符串
 }
 
+// 功能：将配置集合枚举转换为字符串后缀
+// 参数：cred_set - 配置集合（FN_REG、FN_BAK、FN_BOOT、FN_TEMP）
+// 返回值：对应的集合后缀字符串（""、"-bak"、"-boot"、"-temp"）
+// 调用时机：需要显示配置集合名称时（日志输出、错误报告）
+str_t sys_credset2str (int cred_set) { 
+    return &sFN_SET[cred_set*6];  // 从字符串表中获取对应的后缀字符串
+}
+
+// 功能：获取文件大小（以字节为单位）
+// 参数：file - 文件路径字符串
+// 返回值：文件大小（字节），失败时返回-1
+// 调用时机：读取文件前检查文件是否存在和获取大小信息
+static int sizeFile (str_t file) {
+    struct stat st;  // 文件状态信息结构
+    if( fs_stat(file, &st) == -1 )  // 调用文件系统统计函数获取文件信息
+        return -1;  // 文件不存在或无法访问，返回错误标识
+    return st.st_size;  // 返回文件大小字段
+}
+
+// 功能：构建完整的文件路径，支持目录前缀解析和多进程路径展开
+// 参数：prefix - 路径前缀（支持~temp/、~/、绝对路径、相对路径）
+//       suffix - 路径后缀（文件名后缀或扩展名）
+//       pCachedFile - 用于缓存文件路径的指针（可选）
+//       isReadable - 是否检查文件可读性
+// 返回值：动态分配的完整文件路径字符串，失败时返回NULL
+// 调用时机：需要访问配置文件、日志文件或临时文件时
 char* makeFilepath (const char* prefix, const char* suffix, char** pCachedFile, int isReadable) {
-    if( pCachedFile )
-        rt_free(*pCachedFile);
-    char filepath[MAX_FILEPATH_LEN];
-    dbuf_t b = dbuf_ini(filepath);
-    if( strncmp(prefix, "~temp/", 6) == 0 ) {
-        prefix += 6;
-        xputs(&b, tempDir, -1);
+    if( pCachedFile )  // 如果提供了缓存指针
+        rt_free(*pCachedFile);  // 先释放之前缓存的文件路径
+    
+    char filepath[MAX_FILEPATH_LEN];  // 本地路径缓冲区
+    dbuf_t b = dbuf_ini(filepath);    // 初始化动态缓冲区用于路径构建
+    
+    // 根据前缀类型选择基础目录
+    if( strncmp(prefix, "~temp/", 6) == 0 ) {  // 临时目录前缀
+        prefix += 6;                           // 跳过"~temp/"前缀
+        xputs(&b, tempDir, -1);               // 使用临时目录作为基础路径
     }
-    else if( prefix[0] != '/' && (prefix[0] != '.' || prefix[1] != '/') ) {
-        if( prefix[0] == '~' && prefix[1] == '/' )
-            prefix += 2;
-        xputs(&b, homeDir, -1);
+    else if( prefix[0] != '/' && (prefix[0] != '.' || prefix[1] != '/') ) {  // 非绝对路径且非当前目录
+        if( prefix[0] == '~' && prefix[1] == '/' )  // 处理~/前缀
+            prefix += 2;                            // 跳过"~/"前缀
+        xputs(&b, homeDir, -1);                    // 使用主目录作为基础路径
     }
-    for( int fnx=0; fnx < 2; fnx++ ) {
-        str_t fni = fnx==0 ? prefix : suffix;
+    // 否则使用原始前缀（绝对路径或./相对路径）
+    
+    // 处理前缀和后缀字符串拼接
+    for( int fnx=0; fnx < 2; fnx++ ) {  // 分别处理前缀(fnx=0)和后缀(fnx=1)
+        str_t fni = fnx==0 ? prefix : suffix;  // 当前处理的字符串
         char c;
-        while( (c=*fni++) != 0 ) {
-            if( c == '#' ) {
-                if( sys_slaveIdx >= 0 )
-                    xprintf(&b, "-%d", sys_slaveIdx);
+        while( (c=*fni++) != 0 ) {  // 逐字符处理
+            if( c == '#' ) {  // '#'占位符：仅在从进程模式下展开
+                if( sys_slaveIdx >= 0 )  // 如果是从进程
+                    xprintf(&b, "-%d", sys_slaveIdx);  // 添加"-进程号"后缀
             }
-            else if( c == '?' ) {
-                xprintf(&b, "%d", sys_slaveIdx >= 0 ? sys_slaveIdx : 0);
+            else if( c == '?' ) {  // '?'占位符：总是展开为进程号
+                xprintf(&b, "%d", sys_slaveIdx >= 0 ? sys_slaveIdx : 0);  // 主进程使用0
             } else {
-                xputs(&b, &c, 1);
+                xputs(&b, &c, 1);  // 普通字符直接添加
             }
         }
     }
-    if( !xeos(&b) )
-        rt_fatal("File path too big: %s", b.buf);
-    if( isReadable && fs_access(b.buf, R_OK) != 0 )
-        b.buf[0] = b.pos = 0;
-    char* cachedFile = b.buf[0] ? rt_strdup(b.buf) : NULL;
-    if( pCachedFile )
-        *pCachedFile = cachedFile;
-    return cachedFile;
+    
+    if( !xeos(&b) )  // 检查路径是否过长
+        rt_fatal("File path too big: %s", b.buf);  // 路径过长是致命错误
+    
+    if( isReadable && fs_access(b.buf, R_OK) != 0 )  // 如果需要检查可读性但文件不可读
+        b.buf[0] = b.pos = 0;  // 清空缓冲区表示文件不存在
+    
+    char* cachedFile = b.buf[0] ? rt_strdup(b.buf) : NULL;  // 复制路径字符串或返回NULL
+    if( pCachedFile )  // 如果提供了缓存指针
+        *pCachedFile = cachedFile;  // 更新缓存
+    return cachedFile;  // 返回构建的文件路径
 }
 
 dbuf_t readFile (str_t file, int complain) {

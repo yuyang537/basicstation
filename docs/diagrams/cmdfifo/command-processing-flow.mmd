@@ -1,0 +1,220 @@
+graph TD
+    subgraph "命令处理完整流程"
+        subgraph "FIFO连接建立"
+            START["系统启动<br/>sys_enableCmdFIFO()调用"]
+            
+            SAVE_PATH["保存FIFO路径<br/>fifo = file<br/>存储管道文件路径"]
+            
+            INIT_TIMER["初始化定时器<br/>rt_iniTimer(&reopen_tmr)<br/>设置重连回调函数"]
+            
+            FIRST_CONNECT["首次连接尝试<br/>reopen_timeout()调用<br/>立即尝试建立连接"]
+        end
+        
+        subgraph "FIFO状态检查与打开"
+            CHECK_EXISTING{"检查现有连接<br/>aio != NULL?"}
+            
+            CLOSE_OLD["关闭旧连接<br/>aio_close(aio)<br/>aio = NULL"]
+            
+            STAT_CHECK["文件状态检查<br/>stat(fifo, &st)<br/>验证文件存在"]
+            
+            TYPE_CHECK{"文件类型检查<br/>(st.st_mode & S_IFMT)<br/>== S_IFIFO?"}
+            
+            OPEN_FIFO["打开FIFO文件<br/>open(fifo, O_RDONLY |<br/>O_NONBLOCK | O_CLOEXEC)"]
+            
+            OPEN_SUCCESS{"打开成功?<br/>fd != -1?"}
+            
+            CREATE_AIO["创建AIO对象<br/>aio_open(&fifo, fd,<br/>fifo_read, NULL)"]
+            
+            REGISTER_EXIT["注册退出清理<br/>atexit(fifo_close)<br/>程序退出时自动清理"]
+            
+            IMMEDIATE_READ["立即读取数据<br/>fifo_read(aio)<br/>处理可能存在的数据"]
+        end
+        
+        subgraph "数据读取与缓冲"
+            READ_EVENT["AIO读取事件<br/>FIFO有数据可读<br/>fifo_read()被调用"]
+            
+            READ_LOOP["读取循环开始<br/>while(1)持续读取<br/>直到无数据可读"]
+            
+            READ_DATA["读取FIFO数据<br/>read(aio->fd, cmdline+fill,<br/>sizeof(cmdline)-fill)"]
+            
+            READ_RESULT{"读取结果检查"}
+            
+            READ_ERROR["读取错误处理<br/>errno != EAGAIN<br/>记录错误并视为EOF"]
+            
+            READ_EOF["EOF处理<br/>客户端关闭FIFO<br/>触发重连机制"]
+            
+            UPDATE_FILL["更新填充长度<br/>fill += n<br/>累积缓冲区数据"]
+        end
+        
+        subgraph "命令行解析"
+            PARSE_LOOP["解析循环<br/>while(i < n)<br/>遍历缓冲区数据"]
+            
+            FIND_NEWLINE{"查找换行符<br/>cmdline[i] == '\\n'?"}
+            
+            SKIP_CHAR["跳过字符<br/>i++<br/>继续查找"]
+            
+            TERMINATE_CMD["终止命令字符串<br/>cmdline[i] = 0<br/>替换换行符为结束符"]
+            
+            CMD_LENGTH["计算命令长度<br/>cmdlen = i<br/>准备处理"]
+        end
+        
+        subgraph "命令类型识别"
+            CHECK_JSON{"JSON格式检查<br/>cmdline[0] == '{'?"}
+            
+            TEXT_CMD["文本命令处理<br/>非JSON格式<br/>内置命令处理"]
+            
+            JSON_CMD["JSON命令处理<br/>转发到LNS服务器<br/>WebSocket消息"]
+        end
+        
+        subgraph "文本命令处理分支"
+            LOG_PARSE["日志级别解析<br/>log_str2level(cmdline)<br/>解析日志级别名称"]
+            
+            LOG_VALID{"日志级别有效?<br/>lvl >= 0?"}
+            
+            SET_LOG_LEVEL["设置日志级别<br/>log_setLevel(lvl)<br/>动态修改系统日志级别"]
+            
+            UNKNOWN_CMD["未知命令错误<br/>err = 'Unknown fifo command'<br/>不支持的文本命令"]
+        end
+        
+        subgraph "JSON命令处理分支"
+            CHECK_TC{"TC模块状态<br/>TC != NULL?<br/>检查WebSocket连接"]
+            
+            GET_SENDBUF["获取发送缓冲区<br/>getSendbuf(&TC->s2ctx, i)<br/>分配WebSocket发送空间"]
+            
+            SENDBUF_OK{"发送缓冲区可用?<br/>sendbuf.buf != NULL?"}
+            
+            COPY_JSON["复制JSON数据<br/>memcpy(sendbuf.buf,<br/>cmdline, i)"]
+            
+            SET_LENGTH["设置数据长度<br/>sendbuf.pos = i<br/>标记数据大小"]
+            
+            LOG_SEND["记录发送日志<br/>LOG(INFO, 'CMD sent: ...')<br/>显示发送的命令"]
+            
+            SEND_WS["WebSocket发送<br/>sendText(&TC->s2ctx,<br/>&sendbuf)"]
+            
+            WS_FULL["WebSocket缓冲区满<br/>err = 'Not enough WS space'<br/>发送缓冲区不足"]
+            
+            NOT_CONNECTED["TC未连接错误<br/>err = 'Command dropped -<br/>not connected right now'"]
+        end
+        
+        subgraph "缓冲区管理"
+            LOG_ERROR{"错误信息存在?<br/>err != NULL?"}
+            
+            RECORD_ERROR["记录错误日志<br/>LOG(ERROR, '%s: %.20s...',<br/>err, cmdline)"]
+            
+            CALC_REMAIN["计算剩余数据<br/>fill = n -= i+1<br/>更新剩余长度"]
+            
+            MOVE_REMAIN["移动剩余数据<br/>memcpy(cmdline,<br/>cmdline+i+1, n)"]
+            
+            RESET_INDEX["重置解析索引<br/>i = 0<br/>从头开始解析"]
+        end
+        
+        subgraph "错误处理与重连"
+            CLOSE_AIO["关闭AIO连接<br/>aio_close(aio)<br/>aio = NULL"]
+            
+            TRIGGER_REOPEN["触发重连<br/>reopen_timeout(NULL)<br/>立即重连尝试"]
+            
+            SET_RETRY_TIMER["设置重试定时器<br/>rt_setTimer(&reopen_tmr,<br/>CMD_REOPEN_FIFO_INTV)"]
+            
+            RETRY_CONNECT["定时重连<br/>定时器到期后<br/>再次尝试连接"]
+        end
+    end
+    
+    %% 主流程连接
+    START --> SAVE_PATH
+    SAVE_PATH --> INIT_TIMER
+    INIT_TIMER --> FIRST_CONNECT
+    FIRST_CONNECT --> CHECK_EXISTING
+    
+    %% FIFO打开流程
+    CHECK_EXISTING -->|有连接| CLOSE_OLD
+    CHECK_EXISTING -->|无连接| STAT_CHECK
+    CLOSE_OLD --> STAT_CHECK
+    STAT_CHECK --> TYPE_CHECK
+    TYPE_CHECK -->|是FIFO| OPEN_FIFO
+    TYPE_CHECK -->|不是FIFO| SET_RETRY_TIMER
+    OPEN_FIFO --> OPEN_SUCCESS
+    OPEN_SUCCESS -->|成功| CREATE_AIO
+    OPEN_SUCCESS -->|失败| SET_RETRY_TIMER
+    CREATE_AIO --> REGISTER_EXIT
+    REGISTER_EXIT --> IMMEDIATE_READ
+    
+    %% 数据读取流程
+    IMMEDIATE_READ --> READ_EVENT
+    READ_EVENT --> READ_LOOP
+    READ_LOOP --> READ_DATA
+    READ_DATA --> READ_RESULT
+    READ_RESULT -->|错误| READ_ERROR
+    READ_RESULT -->|EOF| READ_EOF
+    READ_RESULT -->|成功| UPDATE_FILL
+    
+    %% 命令解析流程
+    UPDATE_FILL --> PARSE_LOOP
+    PARSE_LOOP --> FIND_NEWLINE
+    FIND_NEWLINE -->|否| SKIP_CHAR
+    FIND_NEWLINE -->|是| TERMINATE_CMD
+    SKIP_CHAR --> PARSE_LOOP
+    TERMINATE_CMD --> CMD_LENGTH
+    CMD_LENGTH --> CHECK_JSON
+    
+    %% 命令类型分支
+    CHECK_JSON -->|否| TEXT_CMD
+    CHECK_JSON -->|是| JSON_CMD
+    
+    %% 文本命令处理
+    TEXT_CMD --> LOG_PARSE
+    LOG_PARSE --> LOG_VALID
+    LOG_VALID -->|是| SET_LOG_LEVEL
+    LOG_VALID -->|否| UNKNOWN_CMD
+    
+    %% JSON命令处理
+    JSON_CMD --> CHECK_TC
+    CHECK_TC -->|连接| GET_SENDBUF
+    CHECK_TC -->|未连接| NOT_CONNECTED
+    GET_SENDBUF --> SENDBUF_OK
+    SENDBUF_OK -->|可用| COPY_JSON
+    SENDBUF_OK -->|不可用| WS_FULL
+    COPY_JSON --> SET_LENGTH
+    SET_LENGTH --> LOG_SEND
+    LOG_SEND --> SEND_WS
+    
+    %% 缓冲区管理
+    SET_LOG_LEVEL --> LOG_ERROR
+    UNKNOWN_CMD --> LOG_ERROR
+    SEND_WS --> LOG_ERROR
+    WS_FULL --> LOG_ERROR
+    NOT_CONNECTED --> LOG_ERROR
+    LOG_ERROR -->|有错误| RECORD_ERROR
+    LOG_ERROR -->|无错误| CALC_REMAIN
+    RECORD_ERROR --> CALC_REMAIN
+    CALC_REMAIN --> MOVE_REMAIN
+    MOVE_REMAIN --> RESET_INDEX
+    RESET_INDEX --> PARSE_LOOP
+    
+    %% 错误处理
+    READ_ERROR --> CLOSE_AIO
+    READ_EOF --> CLOSE_AIO
+    CLOSE_AIO --> TRIGGER_REOPEN
+    TRIGGER_REOPEN --> SET_RETRY_TIMER
+    SET_RETRY_TIMER --> RETRY_CONNECT
+    RETRY_CONNECT --> CHECK_EXISTING
+    
+    %% 样式定义
+    classDef startFlow fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef fifoOps fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef readOps fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef parseOps fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef textCmd fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    classDef jsonCmd fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    classDef bufMgmt fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef errorHandle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef decision fill:#ffecb3,stroke:#ff8f00,stroke-width:2px
+    
+    class START,SAVE_PATH,INIT_TIMER,FIRST_CONNECT startFlow
+    class CHECK_EXISTING,CLOSE_OLD,STAT_CHECK,OPEN_FIFO,CREATE_AIO,REGISTER_EXIT,IMMEDIATE_READ fifoOps
+    class READ_EVENT,READ_LOOP,READ_DATA,UPDATE_FILL readOps
+    class PARSE_LOOP,TERMINATE_CMD,CMD_LENGTH parseOps
+    class TEXT_CMD,LOG_PARSE,SET_LOG_LEVEL textCmd
+    class JSON_CMD,CHECK_TC,GET_SENDBUF,COPY_JSON,SET_LENGTH,LOG_SEND,SEND_WS jsonCmd
+    class CALC_REMAIN,MOVE_REMAIN,RESET_INDEX bufMgmt
+    class READ_ERROR,READ_EOF,CLOSE_AIO,TRIGGER_REOPEN,SET_RETRY_TIMER,RETRY_CONNECT errorHandle
+    class TYPE_CHECK,OPEN_SUCCESS,READ_RESULT,FIND_NEWLINE,CHECK_JSON,LOG_VALID,SENDBUF_OK,LOG_ERROR decision 

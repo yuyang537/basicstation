@@ -1,0 +1,84 @@
+graph TB
+    subgraph "应用层"
+        S2E["S2E协议栈<br/>上行/下行处理"]
+        TC["时间同步控制器<br/>精确时间管理"]
+    end
+
+    subgraph "RAL抽象层"
+        RAL_API["RAL统一接口<br/>ral_tx/ral_config<br/>ral_txstatus/ral_txabort"]
+        
+        subgraph "实现模式选择"
+            RAL_LGW["本地模式<br/>ral_lgw.c<br/>直接调用libloragw"]
+            RAL_MASTER["主从模式<br/>ral_master.c<br/>多进程管理"]
+        end
+        
+        CHALLOC["信道分配算法<br/>ral.c<br/>ral_challoc()"]
+    end
+
+    subgraph "主从进程架构 (ral_master_slave模式)"
+        MASTER["主进程<br/>业务逻辑处理"]
+        
+        subgraph "从进程群"
+            SLAVE1["从进程#0<br/>ral_slave.c<br/>SX130X芯片#0"]
+            SLAVE2["从进程#1<br/>ral_slave.c<br/>SX130X芯片#1"]
+            SLAVE3["从进程#N<br/>ral_slave.c<br/>SX130X芯片#N"]
+        end
+        
+        subgraph "进程间通信"
+            PIPE_UP["上行管道<br/>从→主<br/>RX数据/响应"]
+            PIPE_DN["下行管道<br/>主→从<br/>TX命令/配置"]
+        end
+    end
+
+    subgraph "硬件层"
+        LGW["libloragw<br/>SX1301/SX1302<br/>硬件驱动库"]
+        
+        subgraph "SX130X硬件"
+            CHIP1["SX130X芯片#0<br/>2个射频前端<br/>10个调制解调器"]
+            CHIP2["SX130X芯片#1<br/>2个射频前端<br/>10个调制解调器"]
+            CHIP3["SX130X芯片#N<br/>2个射频前端<br/>10个调制解调器"]
+        end
+    end
+
+    %% 连接关系
+    S2E --> RAL_API
+    TC --> RAL_API
+    
+    RAL_API --> RAL_LGW
+    RAL_API --> RAL_MASTER
+    RAL_API --> CHALLOC
+    
+    RAL_LGW --> LGW
+    RAL_MASTER --> MASTER
+    
+    MASTER --> PIPE_DN
+    PIPE_UP --> MASTER
+    
+    PIPE_DN --> SLAVE1
+    PIPE_DN --> SLAVE2
+    PIPE_DN --> SLAVE3
+    
+    SLAVE1 --> PIPE_UP
+    SLAVE2 --> PIPE_UP
+    SLAVE3 --> PIPE_UP
+    
+    SLAVE1 --> LGW
+    SLAVE2 --> LGW
+    SLAVE3 --> LGW
+    
+    LGW --> CHIP1
+    LGW --> CHIP2
+    LGW --> CHIP3
+
+    %% 样式定义
+    classDef appLayer fill:#e1f5fe
+    classDef ralLayer fill:#f3e5f5
+    classDef procLayer fill:#fff3e0
+    classDef hwLayer fill:#e8f5e8
+    classDef commLayer fill:#fce4ec
+
+    class S2E,TC appLayer
+    class RAL_API,RAL_LGW,RAL_MASTER,CHALLOC ralLayer
+    class MASTER,SLAVE1,SLAVE2,SLAVE3 procLayer
+    class LGW,CHIP1,CHIP2,CHIP3 hwLayer
+    class PIPE_UP,PIPE_DN commLayer 

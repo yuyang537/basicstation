@@ -1,0 +1,97 @@
+flowchart TD
+    %% RAL LGW收发流程图 - 发送和接收数据包处理流程
+
+    subgraph "发送流程 (TX)"
+        direction TB
+        
+        TX_START["S2E发送请求<br/>ral_tx(txjob, s2ctx, nocca)"]
+        TX_INIT["初始化发送包结构体<br/>(libloragw/SX1301AR)"]
+        TX_PARAM["设置发送参数"]
+        
+        subgraph "参数配置"
+            TX_MODE{{"发送模式判断"}}
+            TX_BCN["信标模式<br/>- GPS触发<br/>- 10符号前导码<br/>- 无极性反转<br/>- 无LoRa头部"]
+            TX_DATA["数据模式<br/>- 时间戳触发<br/>- 8符号前导码<br/>- 极性反转<br/>- 包含LoRa头部"]
+        end
+        
+        TX_RPS["RPS参数转换<br/>ral_rps2lgw()"]
+        TX_COPY["复制发送数据<br/>memcpy(payload)"]
+        
+        subgraph "硬件发送"
+            TX_LGW1["libloragw发送<br/>lgw_send()"]
+            TX_LGW2["SX1301AR发送<br/>sx1301ar_send()"]
+        end
+        
+        TX_RESULT{{"发送结果判断"}}
+        TX_OK["返回RAL_TX_OK"]
+        TX_LBT["LBT冲突<br/>返回RAL_TX_NOCA"]
+        TX_FAIL["其他错误<br/>返回RAL_TX_FAIL"]
+    end
+
+    subgraph "接收流程 (RX)"
+        direction TB
+        
+        RX_TIMER["接收轮询定时器<br/>rxpolling()"]
+        RX_FETCH["从硬件获取数据包"]
+        
+        subgraph "数据获取"
+            RX_LGW1_FETCH["libloragw接收<br/>lgw_receive()"]
+            RX_LGW2_FETCH["SX1301AR接收<br/>sx1301ar_fetch()"]
+        end
+        
+        RX_CHECK{{"数据包检查"}}
+        RX_DROP_SPACE["队列空间不足<br/>丢弃数据包"]
+        RX_DROP_CRC["CRC校验失败<br/>丢弃数据包"]
+        RX_DROP_SIZE["包大小超限<br/>丢弃数据包"]
+        
+        RX_PROCESS["处理有效数据包"]
+        RX_QUEUE["加入接收队列<br/>s2e_addRxjob()"]
+        RX_FLUSH["刷新队列<br/>s2e_flushRxjobs()"]
+        RX_NEXT_TIMER["设置下次轮询"]
+    end
+
+    %% 发送流程连接
+    TX_START --> TX_INIT
+    TX_INIT --> TX_PARAM
+    TX_PARAM --> TX_MODE
+    TX_MODE -->|信标| TX_BCN
+    TX_MODE -->|数据| TX_DATA
+    TX_BCN --> TX_RPS
+    TX_DATA --> TX_RPS
+    TX_RPS --> TX_COPY
+    TX_COPY --> TX_LGW1
+    TX_COPY --> TX_LGW2
+    TX_LGW1 --> TX_RESULT
+    TX_LGW2 --> TX_RESULT
+    TX_RESULT -->|成功| TX_OK
+    TX_RESULT -->|LBT冲突| TX_LBT  
+    TX_RESULT -->|失败| TX_FAIL
+
+    %% 接收流程连接
+    RX_TIMER --> RX_FETCH
+    RX_FETCH --> RX_LGW1_FETCH
+    RX_FETCH --> RX_LGW2_FETCH
+    RX_LGW1_FETCH --> RX_CHECK
+    RX_LGW2_FETCH --> RX_CHECK
+    RX_CHECK -->|队列满| RX_DROP_SPACE
+    RX_CHECK -->|CRC错误| RX_DROP_CRC
+    RX_CHECK -->|大小超限| RX_DROP_SIZE
+    RX_CHECK -->|有效| RX_PROCESS
+    RX_PROCESS --> RX_QUEUE
+    RX_QUEUE --> RX_FLUSH
+    RX_FLUSH --> RX_NEXT_TIMER
+    RX_NEXT_TIMER --> RX_TIMER
+    
+    %% 丢弃分支返回
+    RX_DROP_SPACE --> RX_FLUSH
+    RX_DROP_CRC --> RX_CHECK
+    RX_DROP_SIZE --> RX_CHECK
+
+    %% 样式定义
+    classDef txFlow fill:#e3f2fd
+    classDef rxFlow fill:#e8f5e8
+    classDef errorFlow fill:#ffebee
+
+    class TX_START,TX_INIT,TX_PARAM,TX_MODE,TX_BCN,TX_DATA,TX_RPS,TX_COPY,TX_LGW1,TX_LGW2,TX_RESULT,TX_OK,TX_LBT,TX_FAIL txFlow
+    class RX_TIMER,RX_FETCH,RX_LGW1_FETCH,RX_LGW2_FETCH,RX_CHECK,RX_PROCESS,RX_QUEUE,RX_FLUSH,RX_NEXT_TIMER rxFlow
+    class RX_DROP_SPACE,RX_DROP_CRC,RX_DROP_SIZE errorFlow 

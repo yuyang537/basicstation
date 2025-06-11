@@ -1,0 +1,75 @@
+graph TD
+    Start([WebSocket连接开始]) --> ws_ini[ws_ini: 初始化WebSocket对象]
+    ws_ini --> init_buf[初始化读写缓冲区]
+    init_buf --> ws_connect[ws_connect: 建立连接]
+    
+    ws_connect --> parse_uri[uri_parse: 解析目标URI]
+    parse_uri --> uri_ok{URI解析成功?}
+    uri_ok -->|否| connect_fail[连接失败]
+    uri_ok -->|是| check_tls{需要TLS?}
+    
+    check_tls -->|是| setup_tls[conn_setup_tls: 配置TLS]
+    check_tls -->|否| tcp_connect[TCP连接]
+    setup_tls --> tcp_connect
+    
+    tcp_connect --> ws_connecting[ws_connecting: 连接中状态]
+    ws_connecting --> tcp_ok{TCP连接成功?}
+    tcp_ok -->|否| connect_fail
+    tcp_ok -->|是| tls_check{需要TLS握手?}
+    
+    tls_check -->|是| tls_handshake[TLS握手过程]
+    tls_check -->|否| ws_handshake_start[开始WebSocket握手]
+    tls_handshake --> tls_ok{TLS握手成功?}
+    tls_ok -->|否| connect_fail
+    tls_ok -->|是| ws_handshake_start
+    
+    ws_handshake_start --> ws_handshaking[ws_handshaking: 握手状态]
+    ws_handshaking --> send_upgrade[发送HTTP Upgrade请求]
+    send_upgrade --> wait_response[等待服务器响应]
+    wait_response --> check_response{检查响应}
+    check_response -->|失败| connect_fail
+    check_response -->|成功| ws_connected_state[WS_CONNECTED状态]
+    
+    ws_connected_state --> trigger_connected[触发WSEV_CONNECTED事件]
+    trigger_connected --> normal_operation[正常数据传输]
+    
+    subgraph "数据传输阶段"
+        normal_operation --> send_data[ws_sendData: 发送数据]
+        normal_operation --> recv_data[ws_connected_r: 接收数据]
+        
+        send_data --> frame_data[构造WebSocket帧]
+        frame_data --> write_buffer[写入发送缓冲区]
+        write_buffer --> ws_connected_w[ws_connected_w: 写数据]
+        
+        recv_data --> read_buffer[读取接收缓冲区]
+        read_buffer --> parse_frame[解析WebSocket帧]
+        parse_frame --> trigger_event[触发数据接收事件]
+    end
+    
+    normal_operation --> close_request{关闭请求?}
+    close_request -->|是| ws_close[ws_close: 优雅关闭]
+    close_request -->|否| normal_operation
+    
+    ws_close --> send_close_frame[发送关闭帧]
+    send_close_frame --> ws_closing[WS_CLOSING状态]
+    ws_closing --> wait_close_response[等待关闭响应]
+    wait_close_response --> ws_closed[WS_CLOSED状态]
+    ws_closed --> trigger_closed[触发WSEV_CLOSED事件]
+    trigger_closed --> ws_shutdown[ws_shutdown: 清理资源]
+    
+    connect_fail --> trigger_dead[触发WSEV_DEAD事件]
+    trigger_dead --> ws_shutdown
+    ws_shutdown --> End([连接结束])
+
+    %% 样式
+    classDef initState fill:#e3f2fd
+    classDef connectState fill:#fff3e0
+    classDef dataState fill:#e8f5e8
+    classDef closeState fill:#fce4ec
+    classDef errorState fill:#ffebee
+    
+    class ws_ini,init_buf,parse_uri initState
+    class ws_connect,tcp_connect,ws_connecting,tls_handshake,ws_handshaking,send_upgrade connectState
+    class normal_operation,send_data,recv_data,frame_data,write_buffer,read_buffer,parse_frame dataState
+    class ws_close,send_close_frame,ws_closing,wait_close_response,ws_closed closeState
+    class connect_fail,trigger_dead errorState 

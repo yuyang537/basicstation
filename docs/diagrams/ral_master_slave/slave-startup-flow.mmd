@@ -1,0 +1,170 @@
+flowchart TD
+    START([从进程启动<br/>sys_startupSlave])
+    
+    INIT_AIO[建立异步IO对象<br/>rd_aio/wr_aio]
+    INIT_TIMER[初始化接收轮询定时器<br/>rt_iniTimer rxpoll_tmr]
+    START_READ[启动初始管道读取<br/>pipe_read]
+    LOG_START[记录从进程启动日志<br/>sys_slaveIdx]
+    ENTER_LOOP[进入异步IO事件循环<br/>aio_loop]
+    
+    WAIT_CMD[等待主进程命令<br/>管道阻塞读取]
+    READ_PIPE[读取管道数据<br/>read aio fd]
+    CHECK_EOF{检查EOF<br/>主进程退出?}
+    CHECK_ERROR{检查读取错误<br/>errno != EAGAIN?}
+    PARSE_CMD[解析命令头<br/>ral_header]
+    
+    CMD_DISPATCH{命令类型分发}
+    
+    CONFIG_START[接收配置命令<br/>RAL_CMD_CONFIG]
+    PARSE_CONF[解析配置数据<br/>sx130xconf_parse_setup]
+    ALLOC_CH[分配信道<br/>sx130xconf_challoc]
+    INIT_RADIO[初始化无线电<br/>sys_runRadioInit]
+    START_HW[启动硬件<br/>sx130xconf_start]
+    SAVE_CONFIG[保存配置参数<br/>pps_en/region/txpowAdjust]
+    INIT_XTIME[初始化时间会话<br/>ts_newXtimeSession]
+    START_RXPOLL[启动接收轮询<br/>rt_yieldTo rx_polling]
+    SEND_TIMESYNC[发送时间同步响应<br/>sendTimesync]
+    
+    TX_START[接收发送命令<br/>RAL_CMD_TX]
+    SETUP_PKT[设置数据包参数<br/>lgw_pkt_tx_s]
+    CHECK_BCN{检查信标模式<br/>RPS_BCN?}
+    SET_GPS[设置GPS触发模式<br/>tx_mode=ON_GPS]
+    SET_STAMP[设置时间戳模式<br/>tx_mode=TIMESTAMPED]
+    CONVERT_RPS[转换RPS参数<br/>ral_rps2lgw]
+    CALL_SEND[调用硬件发送<br/>lgw_send]
+    CHECK_REGION{检查区域码<br/>region==0?}
+    SEND_RESP[发送CCA/LBT响应<br/>pipe_write_data]
+    
+    STATUS_START[接收状态查询<br/>RAL_CMD_TXSTATUS]
+    QUERY_HW[查询硬件状态<br/>lgw_status]
+    MAP_STATUS[映射状态码<br/>TX_IDLE/SCHEDULED/EMITTING]
+    SEND_STATUS[发送状态响应<br/>pipe_write_data]
+    
+    SYNC_START[接收同步请求<br/>RAL_CMD_TIMESYNC]
+    MEASURE_TIME[执行时间同步测量<br/>ral_getTimesync]
+    BUILD_RESP[构造同步响应<br/>quality+timesync_t]
+    SEND_SYNC[发送同步响应<br/>pipe_write_data]
+    
+    RX_POLL[接收轮询定时器触发<br/>rx_polling]
+    READ_HW[读取硬件缓冲区<br/>lgw_receive]
+    CHECK_PKTS{检查数据包数量<br/>n > 0?}
+    PROCESS_PKT[处理单个数据包<br/>loop i=0..n-1]
+    CHECK_CRC{检查CRC状态<br/>STAT_CRC_OK?}
+    LOG_ERR[记录CRC错误<br/>DEBUG日志]
+    CHECK_SIZE{检查包大小<br/>size <= MAX_LEN?}
+    DROP_PKT[丢弃过大包<br/>ERROR日志]
+    BUILD_RX[构造接收响应<br/>ral_rx_resp]
+    CONVERT_TIME[转换时间戳<br/>ts_xticks2xtime]
+    CONVERT_PARAMS[转换参数<br/>ral_lgw2rps]
+    SEND_RX[发送接收数据<br/>pipe_write_data]
+    SET_NEXT_POLL[设置下次轮询<br/>rt_setTimer]
+    
+    ABORT_START[接收中止命令<br/>RAL_CMD_TXABORT]
+    CALL_ABORT[调用硬件中止<br/>lgw_abort_tx]
+    
+    STOP_START[接收停止命令<br/>RAL_CMD_STOP]
+    CLEAR_TIME[清除时间状态<br/>last_xtime=0]
+    STOP_TIMER[停止轮询定时器<br/>rt_clrTimer]
+    STOP_HW[停止硬件<br/>lgw_stop]
+    
+    EOF_EXIT[主进程退出<br/>exit 2]
+    FATAL_ERROR[致命错误<br/>rt_fatal]
+    UNEXPECTED[意外命令<br/>rt_fatal]
+    
+    START --> INIT_AIO
+    INIT_AIO --> INIT_TIMER
+    INIT_TIMER --> START_READ
+    START_READ --> LOG_START
+    LOG_START --> ENTER_LOOP
+    ENTER_LOOP --> WAIT_CMD
+    
+    WAIT_CMD --> READ_PIPE
+    READ_PIPE --> CHECK_EOF
+    CHECK_EOF -->|EOF| EOF_EXIT
+    CHECK_EOF -->|有数据| CHECK_ERROR
+    CHECK_ERROR -->|EAGAIN| WAIT_CMD
+    CHECK_ERROR -->|其他错误| FATAL_ERROR
+    CHECK_ERROR -->|无错误| PARSE_CMD
+    
+    PARSE_CMD --> CMD_DISPATCH
+    
+    CMD_DISPATCH -->|CONFIG| CONFIG_START
+    CONFIG_START --> PARSE_CONF
+    PARSE_CONF --> ALLOC_CH
+    ALLOC_CH --> INIT_RADIO
+    INIT_RADIO --> START_HW
+    START_HW --> SAVE_CONFIG
+    SAVE_CONFIG --> INIT_XTIME
+    INIT_XTIME --> START_RXPOLL
+    START_RXPOLL --> SEND_TIMESYNC
+    SEND_TIMESYNC --> WAIT_CMD
+    
+    CMD_DISPATCH -->|TX/TX_NOCCA| TX_START
+    TX_START --> SETUP_PKT
+    SETUP_PKT --> CHECK_BCN
+    CHECK_BCN -->|信标模式| SET_GPS
+    CHECK_BCN -->|数据模式| SET_STAMP
+    SET_GPS --> CONVERT_RPS
+    SET_STAMP --> CONVERT_RPS
+    CONVERT_RPS --> CALL_SEND
+    CALL_SEND --> CHECK_REGION
+    CHECK_REGION -->|无LBT| WAIT_CMD
+    CHECK_REGION -->|有LBT| SEND_RESP
+    SEND_RESP --> WAIT_CMD
+    
+    CMD_DISPATCH -->|TXSTATUS| STATUS_START
+    STATUS_START --> QUERY_HW
+    QUERY_HW --> MAP_STATUS
+    MAP_STATUS --> SEND_STATUS
+    SEND_STATUS --> WAIT_CMD
+    
+    CMD_DISPATCH -->|TIMESYNC| SYNC_START
+    SYNC_START --> MEASURE_TIME
+    MEASURE_TIME --> BUILD_RESP
+    BUILD_RESP --> SEND_SYNC
+    SEND_SYNC --> WAIT_CMD
+    
+    CMD_DISPATCH -->|TXABORT| ABORT_START
+    ABORT_START --> CALL_ABORT
+    CALL_ABORT --> WAIT_CMD
+    
+    CMD_DISPATCH -->|STOP| STOP_START
+    STOP_START --> CLEAR_TIME
+    CLEAR_TIME --> STOP_TIMER
+    STOP_TIMER --> STOP_HW
+    STOP_HW --> WAIT_CMD
+    
+    START_RXPOLL -.->|定时触发| RX_POLL
+    RX_POLL --> READ_HW
+    READ_HW --> CHECK_PKTS
+    CHECK_PKTS -->|无包| SET_NEXT_POLL
+    CHECK_PKTS -->|有包| PROCESS_PKT
+    PROCESS_PKT --> CHECK_CRC
+    CHECK_CRC -->|CRC错误| LOG_ERR
+    CHECK_CRC -->|CRC正确| CHECK_SIZE
+    LOG_ERR --> PROCESS_PKT
+    CHECK_SIZE -->|过大| DROP_PKT
+    CHECK_SIZE -->|正常| BUILD_RX
+    DROP_PKT --> PROCESS_PKT
+    BUILD_RX --> CONVERT_TIME
+    CONVERT_TIME --> CONVERT_PARAMS
+    CONVERT_PARAMS --> SEND_RX
+    SEND_RX --> PROCESS_PKT
+    PROCESS_PKT -->|处理完毕| SET_NEXT_POLL
+    SET_NEXT_POLL -.->|下次触发| RX_POLL
+    
+    CMD_DISPATCH -->|其他| UNEXPECTED
+    
+    classDef startEnd fill:#c8e6c9,stroke:#2e7d32,stroke-width:3px
+    classDef process fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef decision fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef hardware fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef communication fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    
+    class START,EOF_EXIT startEnd
+    class INIT_AIO,INIT_TIMER,START_READ,LOG_START,ENTER_LOOP,PARSE_CMD,SAVE_CONFIG process
+    class CHECK_EOF,CHECK_ERROR,CMD_DISPATCH,CHECK_BCN,CHECK_REGION,CHECK_PKTS,CHECK_CRC,CHECK_SIZE decision
+    class FATAL_ERROR,UNEXPECTED error
+    class PARSE_CONF,ALLOC_CH,INIT_RADIO,START_HW,CALL_SEND,QUERY_HW,CALL_ABORT,STOP_HW,READ_HW hardware
+    class SEND_TIMESYNC,SEND_RESP,SEND_STATUS,SEND_SYNC,SEND_RX communication 

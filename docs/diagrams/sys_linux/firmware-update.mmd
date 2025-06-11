@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant Client as "更新客户端"
+    participant Station as "基站进程"
+    participant TempFile as "临时文件<br/>/tmp/update.bi_"
+    participant UpdateFile as "更新文件<br/>/tmp/update.bin"
+    participant UpdateScript as "更新脚本"
+    
+    Client->>Station: 开始固件更新<br/>sys_updateStart(len)
+    
+    alt len == 0 (取消更新)
+        Station->>Station: 关闭文件描述符<br/>close(updfd)
+        Station->>Station: 设置updfd = -1
+    else len > 0 (开始更新)
+        Station->>TempFile: 创建临时文件<br/>makeFilepath("/tmp/update", ".bi_")
+        Station->>TempFile: 打开文件<br/>open(O_CREAT|O_TRUNC|O_WRONLY)
+        TempFile-->>Station: 返回文件描述符updfd
+        
+        loop 写入固件数据
+            Client->>Station: 写入数据块<br/>sys_updateWrite(data, off, len)
+            Station->>TempFile: 写入数据<br/>write(updfd, data, len)
+            alt 写入失败
+                Station->>Station: 记录错误日志
+                Station->>TempFile: 关闭文件<br/>close(updfd)
+                Station->>Station: 设置updfd = -1
+            end
+        end
+        
+        Client->>Station: 提交更新<br/>sys_updateCommit(len)
+        
+        alt len == 0 (取消提交)
+            Station-->>Client: 返回成功(1)
+        else len > 0 (确认提交)
+            alt updfd == -1 (写入失败)
+                Station->>TempFile: 删除临时文件<br/>unlink(temp_updfile)
+                Station-->>Client: 返回失败(0)
+            else 写入成功
+                Station->>TempFile: 关闭文件<br/>close(updfd)
+                Station->>Station: 同步文件系统<br/>sync()
+                Station->>UpdateFile: 重命名文件<br/>rename(temp_updfile, updfile)
+                Station->>Station: 再次同步<br/>sync()
+                Station-->>Client: 返回成功(1)
+            end
+        end
+    end
+    
+    Note over Station: 系统启动时检查更新
+    Station->>Station: 启动时调用<br/>sys_runUpdate()
+    Station->>UpdateFile: 检查文件存在性<br/>access(updfile, X_OK)
+    
+    alt 更新文件存在且可执行
+        Station->>UpdateScript: 执行更新<br/>sys_execCommand(0, argv)
+        Note over UpdateScript: 分离进程执行更新<br/>不等待更新完成
+        UpdateScript->>UpdateScript: 执行固件更新逻辑
+    else 无更新文件
+        Station->>Station: 继续正常启动
+    end
+    
+    Note over Station: 中止更新操作
+    Station->>Station: 调用sys_abortUpdate()
+    Station->>UpdateFile: 删除更新文件<br/>unlink("/tmp/update.bin")
+    Station->>Station: 同步文件系统<br/>sync() 

@@ -1,0 +1,97 @@
+graph TB
+    %% GPS时间同步和定位模块架构图
+    %% 展示GPS数据处理的完整流程和系统组件
+    
+    %% 数据输入层
+    subgraph "数据输入层"
+        GPS_DEV["GPS设备<br/>串口/FIFO"]
+        TTY_MODE["TTY模式<br/>9600-230400 bps"]
+        FIFO_MODE["FIFO模式<br/>命名管道"]
+    end
+    
+    %% 设备连接管理层  
+    subgraph "设备连接管理"
+        DEV_DETECT["设备类型检测<br/>stat()检查"]
+        CONN_MGR["连接管理器<br/>gps_reopen()"]
+        REOPEN_TMR["重连定时器<br/>reopen_timeout()"]
+        AIO_MGR["异步IO管理<br/>aio_open()"]
+    end
+    
+    %% 协议解析层
+    subgraph "协议解析层"
+        DATA_READER["数据读取器<br/>gps_read()"]
+        NMEA_PARSER["NMEA解析器<br/>nmea_gga()"]
+        UBX_PARSER["UBX解析器<br/>NAV-TIMEGPS"]
+        CKSUM_VERIFY["校验和验证<br/>nmea_cksum()"]
+    end
+    
+    %% 数据处理层
+    subgraph "数据处理层"
+        COORD_CONV["坐标转换<br/>nmea_p2dec()"]
+        POS_MONITOR["位置监控<br/>check_tolerance()"]
+        STATUS_TRACK["状态跟踪<br/>fix/nofix/move"]
+        EVENT_GEN["事件生成器<br/>send_gpsev_*()"]
+    end
+    
+    %% 输出服务层
+    subgraph "输出服务层"
+        ALARM_SVC["告警服务<br/>send_alarm()"]
+        EVENT_SVC["事件服务<br/>JSON格式"]
+        POS_SVC["位置服务<br/>sys_getLatLon()"]
+        FILE_SVC["文件服务<br/>lastpos保存"]
+    end
+    
+    %% 外部系统接口
+    subgraph "外部系统"
+        LNS_SERVER["LNS服务器<br/>事件上报"]
+        TC_CONNECTION["TC连接<br/>消息传输"]
+        LOCAL_FILE["本地文件<br/>位置缓存"]
+    end
+    
+    %% 数据流连接
+    GPS_DEV --> DEV_DETECT
+    TTY_MODE --> CONN_MGR
+    FIFO_MODE --> CONN_MGR
+    DEV_DETECT --> CONN_MGR
+    CONN_MGR --> AIO_MGR
+    REOPEN_TMR --> CONN_MGR
+    
+    AIO_MGR --> DATA_READER
+    DATA_READER --> CKSUM_VERIFY
+    CKSUM_VERIFY --> NMEA_PARSER
+    CKSUM_VERIFY --> UBX_PARSER
+    
+    NMEA_PARSER --> COORD_CONV
+    COORD_CONV --> POS_MONITOR
+    POS_MONITOR --> STATUS_TRACK
+    STATUS_TRACK --> EVENT_GEN
+    
+    EVENT_GEN --> ALARM_SVC
+    EVENT_GEN --> EVENT_SVC
+    POS_MONITOR --> POS_SVC
+    POS_MONITOR --> FILE_SVC
+    
+    ALARM_SVC --> TC_CONNECTION
+    EVENT_SVC --> TC_CONNECTION
+    TC_CONNECTION --> LNS_SERVER
+    FILE_SVC --> LOCAL_FILE
+    
+    %% 错误处理流程
+    DATA_READER -.->|连接断开| REOPEN_TMR
+    CKSUM_VERIFY -.->|校验失败| DATA_READER
+    NMEA_PARSER -.->|解析失败| DATA_READER
+    
+    %% 颜色配置
+    classDef inputLayer fill:#e1f5fe
+    classDef connLayer fill:#f3e5f5
+    classDef parseLayer fill:#e8f5e8
+    classDef processLayer fill:#fff3e0
+    classDef outputLayer fill:#fce4ec
+    classDef externalLayer fill:#f1f8e9
+    
+    class GPS_DEV,TTY_MODE,FIFO_MODE inputLayer
+    class DEV_DETECT,CONN_MGR,REOPEN_TMR,AIO_MGR connLayer
+    class DATA_READER,NMEA_PARSER,UBX_PARSER,CKSUM_VERIFY parseLayer
+    class COORD_CONV,POS_MONITOR,STATUS_TRACK,EVENT_GEN processLayer
+    class ALARM_SVC,EVENT_SVC,POS_SVC,FILE_SVC outputLayer
+    class LNS_SERVER,TC_CONNECTION,LOCAL_FILE externalLayer 

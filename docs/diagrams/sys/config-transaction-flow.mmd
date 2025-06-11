@@ -1,0 +1,143 @@
+flowchart TD
+    %% 配置更新事务流程图 - 展示原子性配置更新机制
+    
+    START([开始配置更新])
+    
+    %% 初始化阶段
+    INIT[sys_resetConfigUpdate<br/>清理临时文件和事务标记]
+    CRED_START[sys_credStart<br/>分配凭证数据缓冲区]
+    
+    %% 数据接收阶段
+    RECV_LOOP{接收凭证数据}
+    CRED_WRITE[sys_credWrite<br/>写入数据块到缓冲区]
+    MORE_DATA{还有更多数据?}
+    
+    %% ASN.1解析阶段
+    PARSE[sys_credComplete<br/>ASN.1解析凭证结构]
+    PARSE_TRUST[解析信任链<br/>asn1_seqlen获取长度]
+    PARSE_CERT[解析客户端证书<br/>检查ASN.1序列]
+    PARSE_KEY[解析私钥<br/>支持ASN.1和Token格式]
+    
+    PARSE_OK{解析成功?}
+    PARSE_FAIL[记录错误日志<br/>清理缓冲区]
+    
+    %% 临时文件写入阶段
+    WRITE_TEMP[写入临时配置文件<br/>{tc,cups}-temp.{trust,crt,key}]
+    WRITE_URI[sys_saveUri<br/>保存URI到临时文件]
+    UPDATE_STATE[更新updateState标志<br/>标记配置类别有变更]
+    
+    %% 备份阶段
+    BACKUP_START[sys_backupConfig<br/>启动配置备份]
+    CHECK_BACKUP{已备份?}
+    CREATE_CPY[创建.cpy事务标记<br/>表示开始备份操作]
+    SYNC1[fs_sync<br/>确保标记文件写入磁盘]
+    
+    CLEAN_OLD[删除旧备份文件<br/>清理*-bak.*和*-bak.done]
+    COPY_FILES[复制正式配置到备份<br/>reg -> bak]
+    CREATE_DONE[创建.done标记<br/>表示备份完成]
+    SYNC2[fs_sync<br/>确保备份完成]
+    CLEAN_CPY[删除.cpy标记<br/>备份操作结束]
+    
+    %% 提交阶段
+    COMMIT[sys_commitConfigUpdate<br/>提交配置更新]
+    CHECK_ERROR{有错误?}
+    ABORT[中止更新操作]
+    
+    UPDATE_FILES[updateConfigFiles<br/>原子替换配置文件]
+    CREATE_UPD[创建.upd事务标记<br/>表示准备更新]
+    SYNC3[fs_sync<br/>确保标记写入]
+    RENAME_LOOP[重命名临时文件<br/>temp -> reg]
+    SYNC4[fs_sync<br/>确保重命名完成]
+    CLEAN_UPD[删除.upd标记<br/>更新操作完成]
+    
+    %% 错误恢复阶段
+    RECOVERY([系统重启时])
+    CHECK_FORWARD[checkRollForward<br/>检查未完成的事务]
+    FOUND_UPD{发现.upd文件?}
+    FOUND_CPY{发现.cpy文件?}
+    FOUND_DONE{发现.done文件?}
+    
+    RECOVER_UPDATE[恢复更新操作<br/>完成temp->reg重命名]
+    RECOVER_BACKUP[恢复备份操作<br/>完成reg->bak复制]
+    SET_BACKUP_DONE[设置bakDone标志<br/>标记备份已完成]
+    
+    SUCCESS([配置更新成功])
+    FAIL([配置更新失败])
+    
+    %% 主流程连接
+    START --> INIT
+    INIT --> CRED_START
+    CRED_START --> RECV_LOOP
+    
+    RECV_LOOP --> CRED_WRITE
+    CRED_WRITE --> MORE_DATA
+    MORE_DATA -->|是| RECV_LOOP
+    MORE_DATA -->|否| PARSE
+    
+    PARSE --> PARSE_TRUST
+    PARSE_TRUST --> PARSE_CERT
+    PARSE_CERT --> PARSE_KEY
+    PARSE_KEY --> PARSE_OK
+    
+    PARSE_OK -->|是| WRITE_TEMP
+    PARSE_OK -->|否| PARSE_FAIL
+    PARSE_FAIL --> FAIL
+    
+    WRITE_TEMP --> WRITE_URI
+    WRITE_URI --> UPDATE_STATE
+    UPDATE_STATE --> BACKUP_START
+    
+    %% 备份流程
+    BACKUP_START --> CHECK_BACKUP
+    CHECK_BACKUP -->|否| CREATE_CPY
+    CHECK_BACKUP -->|是| COMMIT
+    
+    CREATE_CPY --> SYNC1
+    SYNC1 --> CLEAN_OLD
+    CLEAN_OLD --> COPY_FILES
+    COPY_FILES --> CREATE_DONE
+    CREATE_DONE --> SYNC2
+    SYNC2 --> CLEAN_CPY
+    CLEAN_CPY --> COMMIT
+    
+    %% 提交流程
+    COMMIT --> CHECK_ERROR
+    CHECK_ERROR -->|是| ABORT
+    CHECK_ERROR -->|否| UPDATE_FILES
+    ABORT --> FAIL
+    
+    UPDATE_FILES --> CREATE_UPD
+    CREATE_UPD --> SYNC3
+    SYNC3 --> RENAME_LOOP
+    RENAME_LOOP --> SYNC4
+    SYNC4 --> CLEAN_UPD
+    CLEAN_UPD --> SUCCESS
+    
+    %% 恢复流程
+    RECOVERY --> CHECK_FORWARD
+    CHECK_FORWARD --> FOUND_UPD
+    FOUND_UPD -->|是| RECOVER_UPDATE
+    FOUND_UPD -->|否| FOUND_CPY
+    
+    FOUND_CPY -->|是| RECOVER_BACKUP
+    FOUND_CPY -->|否| FOUND_DONE
+    
+    FOUND_DONE -->|是| SET_BACKUP_DONE
+    FOUND_DONE -->|否| SUCCESS
+    
+    RECOVER_UPDATE --> SUCCESS
+    RECOVER_BACKUP --> SUCCESS
+    SET_BACKUP_DONE --> SUCCESS
+    
+    %% 样式定义
+    classDef startEndClass fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+    classDef processClass fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef decisionClass fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef errorClass fill:#ffebee,stroke:#d32f2f,stroke-width:2px
+    classDef syncClass fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    
+    class START,SUCCESS,FAIL,RECOVERY startEndClass
+    class INIT,CRED_START,CRED_WRITE,PARSE,PARSE_TRUST,PARSE_CERT,PARSE_KEY,WRITE_TEMP,WRITE_URI,UPDATE_STATE,BACKUP_START,CREATE_CPY,CLEAN_OLD,COPY_FILES,CREATE_DONE,CLEAN_CPY,COMMIT,UPDATE_FILES,CREATE_UPD,RENAME_LOOP,CLEAN_UPD,CHECK_FORWARD,RECOVER_UPDATE,RECOVER_BACKUP,SET_BACKUP_DONE processClass
+    class RECV_LOOP,MORE_DATA,PARSE_OK,CHECK_BACKUP,CHECK_ERROR,FOUND_UPD,FOUND_CPY,FOUND_DONE decisionClass
+    class PARSE_FAIL,ABORT errorClass
+    class SYNC1,SYNC2,SYNC3,SYNC4 syncClass 

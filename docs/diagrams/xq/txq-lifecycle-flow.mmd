@@ -1,0 +1,70 @@
+flowchart TD
+    START([系统启动]) --> INIT[txq_ini初始化]
+    INIT --> INIT_DETAILS["初始化操作：<br/>• 清零队列结构<br/>• 建立空闲链表<br/>• 设置结束标记"]
+    
+    INIT_DETAILS --> READY[系统就绪状态]
+    
+    %% 作业创建流程
+    READY --> REQUEST[作业创建请求]
+    REQUEST --> RESERVE[txq_reserveJob]
+    RESERVE --> CHECK_FREE{"检查空闲链表<br/>freeJobs != TXIDX_END?"}
+    
+    CHECK_FREE -->|"无空闲作业"| NO_JOB[返回NULL<br/>作业创建失败]
+    CHECK_FREE -->|"有空闲作业"| GET_JOB["获取空闲作业：<br/>• 从空闲链表头取出<br/>• 重置所有字段<br/>• 保持临时状态"]
+    
+    GET_JOB --> RESERVE_DATA[txq_reserveData]
+    RESERVE_DATA --> CHECK_SPACE{"检查数据空间<br/>maxlen <= 可用空间?"}
+    
+    CHECK_SPACE -->|"空间不足"| NO_DATA[返回NULL<br/>数据分配失败]
+    CHECK_SPACE -->|"空间充足"| GET_DATA["分配数据空间：<br/>• 返回缓冲区指针<br/>• 基于txdataInUse偏移<br/>• 预留连续空间"]
+    
+    GET_DATA --> FILL_JOB["填充作业数据：<br/>• 设置发送参数<br/>• 填充载荷数据<br/>• 设置数据长度"]
+    
+    FILL_JOB --> DECISION{"调用者决策"}
+    DECISION -->|"确认提交"| COMMIT[txq_commitJob]
+    DECISION -->|"放弃作业"| ABANDON["自动废弃：<br/>• 作业保持预留状态<br/>• 下次分配时重置<br/>• 无需显式清理"]
+    
+    %% 提交流程
+    COMMIT --> COMMIT_DETAILS["提交操作：<br/>• 从空闲链表移除<br/>• 设置数据偏移<br/>• 更新已使用空间<br/>• 标记作业活跃"]
+    
+    COMMIT_DETAILS --> ACTIVE[作业活跃状态]
+    
+    %% 作业管理流程
+    ACTIVE --> MANAGEMENT["作业管理操作"]
+    MANAGEMENT --> IDX_CONVERT["索引转换：<br/>• txq_idx2job<br/>• txq_job2idx"]
+    MANAGEMENT --> LIST_OPS["链表操作：<br/>• txq_nextJob<br/>• txq_unqJob<br/>• txq_insJob"]
+    
+    IDX_CONVERT --> SCHEDULER_USE[调度器使用作业]
+    LIST_OPS --> SCHEDULER_USE
+    
+    %% 作业完成流程
+    SCHEDULER_USE --> COMPLETE[作业完成或取消]
+    COMPLETE --> FREE_JOB[txq_freeJob]
+    
+    FREE_JOB --> FREE_DATA[txq_freeData]
+    FREE_DATA --> CHECK_DATA{"作业有关联数据<br/>off != TXOFF_NIL?"}
+    
+    CHECK_DATA -->|"无数据"| RETURN_LIST["返回空闲链表：<br/>• 插入空闲链表头<br/>• 标记可重用"]
+    
+    CHECK_DATA -->|"有数据"| COMPACT["内存紧凑化：<br/>• 计算释放区域<br/>• 移动后续数据<br/>• 调整所有偏移量<br/>• 更新使用计数"]
+    
+    COMPACT --> RETURN_LIST
+    RETURN_LIST --> READY
+    
+    %% 异常处理
+    NO_JOB --> READY
+    NO_DATA --> ABANDON
+    ABANDON --> READY
+    
+    %% 样式定义
+    classDef initStyle fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef processStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef decisionStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef errorStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef activeStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    
+    class START,INIT,INIT_DETAILS initStyle
+    class RESERVE,GET_JOB,RESERVE_DATA,GET_DATA,COMMIT,COMMIT_DETAILS,FREE_JOB,FREE_DATA,COMPACT,RETURN_LIST processStyle
+    class CHECK_FREE,CHECK_SPACE,DECISION,CHECK_DATA decisionStyle
+    class NO_JOB,NO_DATA errorStyle
+    class READY,ACTIVE,SCHEDULER_USE activeStyle 

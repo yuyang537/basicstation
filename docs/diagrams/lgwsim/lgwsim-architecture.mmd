@@ -1,0 +1,86 @@
+graph TB
+    subgraph "LoRa网关仿真器架构 (LGWSIM)"
+        subgraph "API兼容层"
+            LGW1["LGW1 API<br/>libloragw兼容接口<br/>• lgw_start/stop<br/>• lgw_send/receive<br/>• lgw_status"]
+            LGW2["LGW2 API<br/>sx1301ar兼容接口<br/>• sx1301ar_start/stop<br/>• sx1301ar_send/fetch<br/>• sx1301ar_tx_status"]
+        end
+        
+        subgraph "核心仿真引擎"
+            CORE["仿真器核心<br/>• xticks()时间戳<br/>• airtime()空中时间计算<br/>• cca()信道评估<br/>• 双重编译配置"]
+            
+            TIME["时间管理<br/>• timeOffset时间偏移<br/>• txbeg/txend发送时窗<br/>• GPS同步仿真<br/>• PPS脉冲模拟"]
+            
+            CCA["信道评估模块<br/>• MAX_CCA_INFOS(10个)<br/>• MAGIC_CCA_FREQ标识<br/>• 冲突检测算法<br/>• 频率时间匹配"]
+        end
+        
+        subgraph "通信子系统"
+            SOCK["Unix域套接字<br/>• SOCK_STREAM连接<br/>• 非阻塞模式<br/>• 自动重连机制<br/>• 环境变量配置"]
+            
+            AIO["异步IO管理<br/>• read_socket()读回调<br/>• write_socket()写回调<br/>• 事件驱动处理<br/>• 错误恢复机制"]
+            
+            CONN["连接管理<br/>• try_connecting()重连<br/>• 1秒重试间隔<br/>• 连接状态跟踪<br/>• 标识包发送"]
+        end
+        
+        subgraph "数据缓冲系统"
+            RXBUF["接收缓冲区<br/>• 环形缓冲区设计<br/>• RX_NPKTS(1000)容量<br/>• 字节级对齐<br/>• 溢出丢弃机制"]
+            
+            TXBUF["发送缓冲区<br/>• tx_pkt单包缓冲<br/>• 状态跟踪<br/>• 参数转换<br/>• 即时发送"]
+            
+            IDX["索引管理<br/>• rx_ridx读索引<br/>• rx_widx写索引<br/>• rx_dsc丢弃计数<br/>• 环形算法"]
+        end
+    end
+    
+    subgraph "外部系统接口"
+        ENV["环境变量<br/>LORAGW_SPI<br/>套接字路径配置"]
+        
+        SIM["仿真服务器<br/>• Python/C++实现<br/>• 数据包注入<br/>• CCA信息提供<br/>• 网络仿真"]
+        
+        APP["BasicStation应用<br/>• RAL层调用<br/>• 数据包发送<br/>• 状态查询<br/>• 配置管理"]
+    end
+    
+    subgraph "配置系统"
+        CFG1["LGW1配置<br/>• lgw_board_setconf<br/>• lgw_rxrf_setconf<br/>• lgw_rxif_setconf<br/>• lgw_txgain_setconf"]
+        
+        CFG2["LGW2配置<br/>• sx1301ar_conf_board<br/>• sx1301ar_conf_chip<br/>• sx1301ar_conf_chan<br/>• sx1301ar_conf_tx_gain"]
+        
+        INIT["初始化函数<br/>• sx1301ar_init_*系列<br/>• 默认参数设置<br/>• 结构体初始化<br/>• 枚举转换"]
+    end
+    
+    %% 数据流连接
+    APP --> LGW1
+    APP --> LGW2
+    LGW1 --> CORE
+    LGW2 --> CORE
+    
+    CORE --> TIME
+    CORE --> CCA
+    CORE --> TXBUF
+    
+    SOCK --> AIO
+    AIO --> RXBUF
+    AIO --> CONN
+    
+    RXBUF --> IDX
+    TXBUF --> SOCK
+    
+    ENV --> SOCK
+    SIM --> SOCK
+    
+    CFG1 --> LGW1
+    CFG2 --> LGW2
+    INIT --> CFG2
+    
+    %% 样式定义
+    classDef apiLayer fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef coreEngine fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef commSystem fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef bufferSystem fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef external fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    classDef config fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+    
+    class LGW1,LGW2 apiLayer
+    class CORE,TIME,CCA coreEngine
+    class SOCK,AIO,CONN commSystem
+    class RXBUF,TXBUF,IDX bufferSystem
+    class ENV,SIM,APP external
+    class CFG1,CFG2,INIT config 

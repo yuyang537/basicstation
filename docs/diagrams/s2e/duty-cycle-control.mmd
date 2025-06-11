@@ -1,0 +1,64 @@
+graph TD
+    A[发送任务开始] --> B{检查区域类型}
+    B -->|EU868| C[freq2band频率映射]
+    B -->|其他区域| D[仅检查信道占空比]
+    
+    C --> E{频率范围判断}
+    E -->|869.4-869.65MHz| F[DC_DECI<br/>0.1%占空比频段]
+    E -->|868.0-868.6MHz<br/>869.7-870.0MHz| G[DC_CENTI<br/>1%占空比频段]
+    E -->|其他频率| H[DC_MILLI<br/>10%占空比频段]
+    
+    F --> I[检查频段占空比状态]
+    G --> I
+    H --> I
+    D --> J[检查信道占空比状态]
+    
+    I --> K{频段是否可用?}
+    K -->|阻塞时间未到| L[频段占空比检查失败]
+    K -->|可以发送| J
+    
+    J --> M{信道是否可用?}
+    M -->|阻塞时间未到| N[信道占空比检查失败]
+    M -->|可以发送| O[允许发送]
+    
+    L --> P[尝试备选天线/时间]
+    N --> P
+    P --> Q{有备选方案?}
+    Q -->|有| A
+    Q -->|无| R[丢弃发送任务]
+    
+    O --> S[执行发送]
+    S --> T[update_DC更新占空比]
+    
+    T --> U[更新EU868频段占空比]
+    T --> V[更新信道占空比]
+    
+    U --> W[计算频段阻塞时间<br/>txtime + airtime × 频段倍数]
+    V --> X[计算信道阻塞时间<br/>txtime + airtime × 信道倍数]
+    
+    W --> Y[记录到dc_eu868bands数组]
+    X --> Z[记录到dc_perChnl数组]
+    
+    Y --> AA[发送完成]
+    Z --> AA
+    
+    subgraph "占空比倍数"
+        BB[DC_DECI: 1000倍<br/>0.1%占空比]
+        CC[DC_CENTI: 100倍<br/>1%占空比]
+        DD[DC_MILLI: 10倍<br/>10%占空比]
+        EE[信道倍数: 可配置<br/>默认100倍]
+    end
+    
+    subgraph "特殊状态"
+        FF[USTIME_MIN: 禁用占空比]
+        GG[USTIME_MAX: 永久阻塞]
+    end
+    
+    style A fill:#e1f5fe
+    style O fill:#c8e6c9
+    style R fill:#ffcdd2
+    style L fill:#ffcdd2
+    style N fill:#ffcdd2
+    style F fill:#fff3e0
+    style G fill:#fff3e0
+    style H fill:#fff3e0 

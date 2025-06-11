@@ -1,0 +1,82 @@
+graph TD
+    A["无线电层接收<br/>RAL Layer"] --> B["s2e_addRxjob()<br/>添加接收任务"]
+    
+    B --> C["获取新接收帧<br/>rxjob_t* rxjob"]
+    C --> D["镜像帧检测循环<br/>遍历现有接收队列"]
+    
+    D --> E{"检查重复帧条件<br/>相同DR + 长度 + 内容?"}
+    E -->|否| F["rxq_commitJob()<br/>提交新帧到队列"]
+    E -->|是| G["信号质量比较<br/>(8*SNR - RSSI)"]
+    
+    G --> H{"新帧质量更好?"}
+    H -->|是| I["丢弃旧帧<br/>保留新帧"]
+    H -->|否| J["丢弃新帧<br/>保留旧帧"]
+    
+    I --> K["记录调试日志<br/>镜像帧处理"]
+    J --> K
+    F --> L["接收队列<br/>RXQ"]
+    K --> L
+    
+    L --> M["s2e_flushRxjobs()<br/>刷新接收队列"]
+    M --> N["队列处理循环<br/>while(first < next)"]
+    
+    N --> O["getSendbuf()<br/>获取发送缓冲区"]
+    O --> P{"WebSocket缓冲区可用?"}
+    P -->|否| Q["返回等待<br/>稍后重试"]
+    P -->|是| R["获取下一个接收任务<br/>rxjob_t* j"]
+    
+    R --> S["准备日志缓冲区<br/>详细日志输出"]
+    S --> T["uj_encOpen()<br/>开始JSON编码"]
+    T --> U["s2e_parse_lora_frame()<br/>解析LoRa帧"]
+    
+    U --> V{"帧解析成功?<br/>通过过滤器?"}
+    V -->|否| W["重置缓冲区<br/>跳过此帧"]
+    V -->|是| X["计算参考时间<br/>时间同步处理"]
+    
+    W --> N
+    X --> Y["编码上行信息JSON<br/>RefTime, DR, Freq, upinfo"]
+    
+    Y --> Z["编码接收上下文<br/>rctx, xtime, gpstime"]
+    Z --> AA["编码信号质量<br/>fts, rssi, snr, rxtime"]
+    AA --> BB["uj_encClose()<br/>结束JSON编码"]
+    
+    BB --> CC{"JSON编码成功?<br/>缓冲区足够?"}
+    CC -->|否| DD["记录错误日志<br/>缓冲区溢出"]
+    CC -->|是| EE["sendText()<br/>发送到LNS"]
+    
+    DD --> N
+    EE --> FF["WebSocket传输<br/>到网络服务器"]
+    FF --> N
+    
+    % 数据结构说明
+    GG["接收任务结构<br/>rxjob_t"] --> R
+    GG --> HH["freq: 接收频率<br/>dr: 数据速率<br/>len: 帧长度<br/>snr: 信噪比<br/>rssi: 信号强度<br/>xtime: 扩展时间戳<br/>rctx: 接收上下文<br/>fts: 精细时间戳"]
+    
+    II["接收队列<br/>rxq_t"] --> L
+    II --> JJ["rxjobs[]: 任务数组<br/>rxdata[]: 数据缓冲区<br/>first: 队列头<br/>next: 队列尾"]
+    
+    % 关键算法说明
+    KK["镜像帧检测算法<br/>Mirror Frame Detection"] --> G
+    KK --> LL["目的: 消除相邻频率反射<br/>方法: 内容比较 + 质量评估<br/>指标: 8*SNR - RSSI<br/>结果: 保留最佳信号"]
+    
+    MM["时间同步算法<br/>Time Synchronization"] --> X
+    MM --> NN["muxtime: 多路复用基准时间<br/>reftime: 参考时间点<br/>计算: 基准时间 + 标准化时间差<br/>精度: 微秒级同步"]
+    
+    % 样式设置
+    style A fill:#e1f5fe
+    style FF fill:#e1f5fe
+    
+    style B fill:#f3e5f5
+    style M fill:#f3e5f5
+    style U fill:#f3e5f5
+    
+    style L fill:#fff3e0
+    style O fill:#fff3e0
+    
+    style G fill:#e8f5e8
+    style X fill:#e8f5e8
+    
+    style GG fill:#fce4ec
+    style II fill:#fce4ec
+    style KK fill:#fce4ec
+    style MM fill:#fce4ec 

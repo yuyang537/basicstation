@@ -1,0 +1,177 @@
+graph TB
+    subgraph "BasicStation Flash文件系统存储布局"
+        direction TB
+        
+        subgraph "Flash物理布局"
+            direction TB
+            
+            subgraph "Flash分区配置"
+                FLASH_BASE["Flash基地址<br/>FLASH_ADDR"]
+                PAGE_START["起始页<br/>FS_PAGE_START"]
+                PAGE_COUNT["总页数<br/>FS_PAGE_CNT"]
+            end
+            
+            subgraph "双分区架构"
+                direction LR
+                
+                subgraph "A分区"
+                    A_HEADER["分区头(4字节)<br/>魔数:0xA4B5<br/>GC序列号"]
+                    A_DATA["数据区<br/>(FS_PAGE_CNT/2 页)"]
+                    A_HEADER --> A_DATA
+                end
+                
+                subgraph "B分区"
+                    B_HEADER["分区头(4字节)<br/>魔数:0xA4B5<br/>GC序列号"]
+                    B_DATA["数据区<br/>(FS_PAGE_CNT/2 页)"]
+                    B_HEADER --> B_DATA
+                end
+            end
+        end
+        
+        subgraph "记录格式设计"
+            direction TB
+            
+            subgraph "通用记录结构"
+                BEGTAG["开始标签(4字节)<br/>[31:30] cmd(2位)<br/>[29:16] ino(14位)<br/>[15:2] len(14位)<br/>[1:0] pad(2位)"]
+                PAYLOAD["负载数据<br/>(长度可变)"]
+                ENDTAG["结束标签(4字节)<br/>[31:16] crc(16位)<br/>[15:2] len(14位)<br/>[1:0] pad(2位)"]
+                
+                BEGTAG --> PAYLOAD
+                PAYLOAD --> ENDTAG
+            end
+            
+            subgraph "FILE记录格式"
+                FILE_BEGTAG["开始标签<br/>cmd=0(FILE)"]
+                FILE_CRC["文件名CRC(4字节)<br/>快速查找哈希"]
+                FILE_TIME["创建时间(4字节)<br/>UTC时间戳"]
+                FILE_NAME["文件名字符串<br/>以\0结尾<br/>4字节对齐"]
+                FILE_ENDTAG["结束标签<br/>pad=0"]
+                
+                FILE_BEGTAG --> FILE_CRC
+                FILE_CRC --> FILE_TIME
+                FILE_TIME --> FILE_NAME
+                FILE_NAME --> FILE_ENDTAG
+            end
+            
+            subgraph "DATA记录格式"
+                DATA_BEGTAG["开始标签<br/>cmd=1(DATA)"]
+                DATA_CONTENT["文件数据<br/>实际内容<br/>4字节对齐"]
+                DATA_ENDTAG["结束标签<br/>pad=填充字节数"]
+                
+                DATA_BEGTAG --> DATA_CONTENT
+                DATA_CONTENT --> DATA_ENDTAG
+            end
+            
+            subgraph "RENAME记录格式"
+                RENAME_BEGTAG["开始标签<br/>cmd=2(RENAME)"]
+                RENAME_OLDCRC["旧文件名CRC(4字节)"]
+                RENAME_NEWCRC["新文件名CRC(4字节)"]
+                RENAME_NAMES["旧名\0新名\0<br/>4字节对齐"]
+                RENAME_ENDTAG["结束标签<br/>pad=0"]
+                
+                RENAME_BEGTAG --> RENAME_OLDCRC
+                RENAME_OLDCRC --> RENAME_NEWCRC
+                RENAME_NEWCRC --> RENAME_NAMES
+                RENAME_NAMES --> RENAME_ENDTAG
+            end
+            
+            subgraph "DELETE记录格式"
+                DELETE_BEGTAG["开始标签<br/>cmd=3(DELETE)"]
+                DELETE_CRC["文件名CRC(4字节)"]
+                DELETE_TIME["删除时间(4字节)"]
+                DELETE_NAME["文件名字符串<br/>以\0结尾<br/>4字节对齐"]
+                DELETE_ENDTAG["结束标签<br/>pad=0"]
+                
+                DELETE_BEGTAG --> DELETE_CRC
+                DELETE_CRC --> DELETE_TIME
+                DELETE_TIME --> DELETE_NAME
+                DELETE_NAME --> DELETE_ENDTAG
+            end
+        end
+        
+        subgraph "数据加密保护"
+            direction LR
+            
+            FLASH_KEY["加密密钥<br/>flashKey[4]<br/>4个32位密钥"]
+            ADDR_MAP["地址映射<br/>(faddr>>2) & 3<br/>选择密钥"]
+            XOR_ENC["XOR加密<br/>data ^ key<br/>位置相关"]
+            
+            FLASH_KEY --> ADDR_MAP
+            ADDR_MAP --> XOR_ENC
+        end
+        
+        subgraph "日志结构化特性"
+            direction TB
+            
+            APPEND_ONLY["仅追加写入<br/>• 所有操作顺序记录<br/>• 不会就地修改<br/>• 支持快速恢复"]
+            
+            FORWARD_SCAN["正向扫描<br/>• 从flashFsBeg()开始<br/>• 按记录顺序读取<br/>• 用于完整遍历"]
+            
+            BACKWARD_SCAN["逆向扫描<br/>• 从flashWP开始<br/>• 向前查找文件<br/>• 用于文件查找"]
+            
+            APPEND_ONLY --> FORWARD_SCAN
+            APPEND_ONLY --> BACKWARD_SCAN
+        end
+        
+        subgraph "垃圾回收布局"
+            direction LR
+            
+            ACTIVE_SEC["活跃分区<br/>当前写入分区<br/>fsSection指示"]
+            INACTIVE_SEC["非活跃分区<br/>GC目标分区<br/>空闲或待擦除"]
+            GC_SWITCH["分区切换<br/>fsSection ^= 1<br/>角色互换"]
+            
+            ACTIVE_SEC --> GC_SWITCH
+            INACTIVE_SEC --> GC_SWITCH
+            GC_SWITCH --> ACTIVE_SEC
+            GC_SWITCH --> INACTIVE_SEC
+        end
+        
+        subgraph "写指针管理"
+            direction TB
+            
+            FLASH_WP["写指针<br/>flashWP<br/>指向下一写位置"]
+            WP_UPDATE["指针更新<br/>每次写入后递增<br/>+= 记录大小"]
+            WP_RESET["指针重置<br/>GC时重新初始化<br/>指向新分区开始"]
+            
+            FLASH_WP --> WP_UPDATE
+            WP_UPDATE --> FLASH_WP
+            WP_RESET --> FLASH_WP
+        end
+    end
+    
+    %% 连接关系
+    FLASH_BASE --> A_HEADER
+    FLASH_BASE --> B_HEADER
+    
+    A_DATA -.-> FILE_BEGTAG
+    A_DATA -.-> DATA_BEGTAG
+    A_DATA -.-> RENAME_BEGTAG
+    A_DATA -.-> DELETE_BEGTAG
+    
+    BEGTAG -.-> FILE_BEGTAG
+    BEGTAG -.-> DATA_BEGTAG
+    BEGTAG -.-> RENAME_BEGTAG
+    BEGTAG -.-> DELETE_BEGTAG
+    
+    FLASH_WP --> A_DATA
+    FLASH_WP --> B_DATA
+    
+    XOR_ENC -.-> A_DATA
+    XOR_ENC -.-> B_DATA
+    
+    %% 样式定义
+    classDef physicalStyle fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef recordStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef securityStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef logStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef gcStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef mgmtStyle fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    
+    class FLASH_BASE,PAGE_START,PAGE_COUNT,A_HEADER,A_DATA,B_HEADER,B_DATA physicalStyle
+    class BEGTAG,PAYLOAD,ENDTAG,FILE_BEGTAG,FILE_CRC,FILE_TIME,FILE_NAME,FILE_ENDTAG recordStyle
+    class DATA_BEGTAG,DATA_CONTENT,DATA_ENDTAG,RENAME_BEGTAG,RENAME_OLDCRC,RENAME_NEWCRC,RENAME_NAMES,RENAME_ENDTAG recordStyle
+    class DELETE_BEGTAG,DELETE_CRC,DELETE_TIME,DELETE_NAME,DELETE_ENDTAG recordStyle
+    class FLASH_KEY,ADDR_MAP,XOR_ENC securityStyle
+    class APPEND_ONLY,FORWARD_SCAN,BACKWARD_SCAN logStyle
+    class ACTIVE_SEC,INACTIVE_SEC,GC_SWITCH gcStyle
+    class FLASH_WP,WP_UPDATE,WP_RESET mgmtStyle 

@@ -1,0 +1,89 @@
+flowchart TD
+    A[接收LoRaWAN帧数据] --> B{帧长度检查}
+    B -->|len == 0| C[记录错误日志<br/>返回解析失败]
+    B -->|len > 0| D[提取MHDR字段<br/>frame[0] & 0xE0]
+    
+    D --> E{基本格式校验}
+    E -->|长度不足| C
+    E -->|协议版本错误| C
+    E -->|预留位错误| C
+    E -->|格式正确| F{识别帧类型}
+    
+    F -->|0xE0| G[Proprietary帧]
+    F -->|0x20| H[Join Accept帧]
+    F -->|0x00/0xC0| I[Join Request/Rejoin帧]
+    F -->|0x40/0x60/0x80/0xA0| J[Data帧]
+    
+    subgraph "Proprietary & Join Accept处理"
+        G --> G1[确定消息类型<br/>propdf/jacc]
+        H --> G1
+        G1 --> G2[编码原始载荷<br/>十六进制格式]
+        G2 --> G3[生成JSON输出]
+        G3 --> SUCCESS1[返回解析成功]
+    end
+    
+    subgraph "Join Request/Rejoin处理"
+        I --> I1{长度检查}
+        I1 -->|!= 23字节| C
+        I1 -->|== 23字节| I2[提取JoinEUI<br/>8字节小端序]
+        
+        I2 --> I3{JoinEUI过滤检查}
+        I3 -->|过滤器未启用| I6
+        I3 -->|过滤器启用| I4[遍历范围数组]
+        I4 --> I5{在允许范围内?}
+        I5 -->|否| I7[记录过滤日志<br/>返回过滤结果]
+        I5 -->|是| I6[提取其他字段]
+        
+        I6 --> I8[DevEUI提取<br/>8字节小端序]
+        I8 --> I9[DevNonce提取<br/>2字节小端序]
+        I9 --> I10[MIC提取<br/>4字节小端序]
+        I10 --> I11[编码为JSON格式]
+        I11 --> I12[生成日志输出]
+        I12 --> SUCCESS2[返回解析成功]
+    end
+    
+    subgraph "Data帧处理"
+        J --> J1[提取FOpts长度<br/>FCtrl & 0x0F]
+        J1 --> J2[计算FPort偏移<br/>FOpts长度 + 8]
+        J2 --> J3{长度检查}
+        J3 -->|FPort偏移 > len-4| C
+        J3 -->|长度正确| J4[提取DevAddr<br/>4字节小端序]
+        
+        J4 --> J5[提取NetID<br/>DevAddr高7位]
+        J5 --> J6{NetID过滤检查}
+        J6 -->|位掩码检查失败| J7[记录过滤日志<br/>返回过滤结果]
+        J6 -->|位掩码检查通过| J8[提取所有字段]
+        
+        J8 --> J9[MHDR, FCtrl, FCnt]
+        J9 --> J10[FOpts, FPort, 载荷]
+        J10 --> J11[MIC提取<br/>4字节小端序]
+        J11 --> J12[确定帧方向<br/>updf/dndf]
+        J12 --> J13[编码为JSON格式]
+        J13 --> J14[生成详细日志]
+        J14 --> SUCCESS3[返回解析成功]
+    end
+    
+    subgraph "信标生成流程"
+        BEACON[s2e_make_beacon调用] --> B1[解析布局配置<br/>时间偏移, 信息偏移, 总长度]
+        B1 --> B2[清零输出缓冲区]
+        B2 --> B3[填充GPS时间<br/>4字节小端序]
+        B3 --> B4[转换地理坐标<br/>度数到定点数]
+        B4 --> B5[填充经纬度<br/>各3字节小端序]
+        B5 --> B6[填充信息描述字节]
+        B6 --> B7[计算CRC1<br/>时间部分校验]
+        B7 --> B8[计算CRC2<br/>信息部分校验]
+        B8 --> B9[填充CRC校验码<br/>各2字节小端序]
+        B9 --> B10[信标帧构造完成]
+    end
+
+    classDef errorNode fill:#ffcdd2
+    classDef successNode fill:#c8e6c9
+    classDef processNode fill:#fff3e0
+    classDef filterNode fill:#e1f5fe
+    classDef beaconNode fill:#f3e5f5
+
+    class C,I7,J7 errorNode
+    class SUCCESS1,SUCCESS2,SUCCESS3,B10 successNode
+    class D,E,F,G1,G2,I2,I6,I8,I9,I10,J1,J2,J4,J8,J9,J10,J11,J12 processNode
+    class I3,I4,I5,J5,J6 filterNode
+    class BEACON,B1,B2,B3,B4,B5,B6,B7,B8,B9 beaconNode 

@@ -1,0 +1,140 @@
+graph TD
+    subgraph "FIFO连接管理状态机"
+        subgraph "连接状态"
+            DISCONNECTED["断开状态<br/>aio = NULL<br/>• 初始状态<br/>• 连接失败状态<br/>• EOF后状态<br/>• 错误后状态"]
+            
+            CONNECTING["连接中状态<br/>fifo_reopen()执行<br/>• 文件状态检查<br/>• FIFO类型验证<br/>• 文件描述符打开<br/>• AIO对象创建"]
+            
+            CONNECTED["已连接状态<br/>aio != NULL<br/>• 正常工作状态<br/>• 可读取FIFO数据<br/>• 处理客户端命令<br/>• 监听AIO事件"]
+            
+            ERROR["错误状态<br/>临时状态<br/>• 读取错误<br/>• 打开失败<br/>• 文件类型错误<br/>• 立即转为断开"]
+        end
+        
+        subgraph "重连机制"
+            TIMER_INIT["定时器初始化<br/>rt_iniTimer(&reopen_tmr,<br/>reopen_timeout)<br/>设置重连回调函数"]
+            
+            IMMEDIATE_RETRY["立即重连<br/>reopen_timeout(NULL)<br/>• 系统启动时<br/>• EOF检测后<br/>• 错误发生后"]
+            
+            SCHEDULED_RETRY["定时重连<br/>rt_setTimer(&reopen_tmr,<br/>CMD_REOPEN_FIFO_INTV)<br/>定期重试机制"]
+            
+            RETRY_INTERVAL["重连间隔<br/>CMD_REOPEN_FIFO_INTV<br/>• 配置的重试间隔<br/>• 避免频繁重试<br/>• 系统资源保护"]
+        end
+        
+        subgraph "文件状态检查"
+            STAT_FILE["文件状态检查<br/>stat(fifo, &st)<br/>检查文件存在性"]
+            
+            FILE_EXISTS{"文件存在?<br/>stat() == 0"}
+            
+            CHECK_TYPE["文件类型检查<br/>(st.st_mode & S_IFMT)<br/>== S_IFIFO"]
+            
+            FIFO_TYPE{"是FIFO类型?<br/>S_IFIFO匹配"}
+            
+            FILE_NOT_READY["文件未就绪<br/>• 文件不存在<br/>• 不是FIFO类型<br/>• 权限不足"]
+        end
+        
+        subgraph "文件描述符管理"
+            OPEN_FILE["打开FIFO文件<br/>open(fifo, O_RDONLY |<br/>O_NONBLOCK | O_CLOEXEC)"]
+            
+            OPEN_FLAGS["打开标志说明<br/>• O_RDONLY: 只读模式<br/>• O_NONBLOCK: 非阻塞<br/>• O_CLOEXEC: 自动关闭"]
+            
+            FD_SUCCESS{"打开成功?<br/>fd != -1"}
+            
+            FD_ERROR["打开失败处理<br/>• 记录错误日志<br/>• 返回失败状态<br/>• 触发重连定时器"]
+        end
+        
+        subgraph "AIO对象管理"
+            CREATE_AIO_OBJ["创建AIO对象<br/>aio_open(&fifo, fd,<br/>fifo_read, NULL)"]
+            
+            AIO_CONTEXT["AIO上下文设置<br/>• ctx = &fifo<br/>• read_cb = fifo_read<br/>• write_cb = NULL<br/>• fd = file descriptor"]
+            
+            REGISTER_CALLBACK["注册回调函数<br/>• 读取事件回调<br/>• 事件驱动处理<br/>• 非阻塞操作"]
+            
+            ATEXIT_REGISTER["注册退出清理<br/>atexit(fifo_close)<br/>程序退出自动清理"]
+        end
+        
+        subgraph "连接生命周期事件"
+            STARTUP_EVENT["系统启动事件<br/>sys_enableCmdFIFO()<br/>首次连接尝试"]
+            
+            EOF_EVENT["EOF事件<br/>客户端关闭FIFO<br/>• read()返回0<br/>• 写端关闭<br/>• 需要重新打开"]
+            
+            ERROR_EVENT["错误事件<br/>读取或打开失败<br/>• errno != EAGAIN<br/>• 文件系统错误<br/>• 权限问题"]
+            
+            EXIT_EVENT["程序退出事件<br/>atexit处理器<br/>• 清理AIO连接<br/>• 关闭文件描述符<br/>• 资源释放"]
+        end
+        
+        subgraph "特殊处理机制"
+            IMMEDIATE_READ["立即读取<br/>fifo_read(aio)<br/>• 连接成功后立即读取<br/>• 处理可能存在的数据<br/>• 避免数据丢失"]
+            
+            CLOSE_OLD["关闭旧连接<br/>aio_close(aio)<br/>• 重连前清理<br/>• 避免文件描述符泄漏<br/>• 状态重置"]
+            
+            ERROR_RECOVERY["错误恢复机制<br/>• 自动重连<br/>• 状态重置<br/>• 日志记录<br/>• 服务延续性"]
+        end
+    end
+    
+    %% 状态转换连接
+    DISCONNECTED --> CONNECTING
+    CONNECTING --> CONNECTED
+    CONNECTING --> ERROR
+    CONNECTED --> ERROR
+    ERROR --> DISCONNECTED
+    
+    %% 重连机制连接
+    TIMER_INIT --> IMMEDIATE_RETRY
+    IMMEDIATE_RETRY --> CONNECTING
+    SCHEDULED_RETRY --> CONNECTING
+    ERROR --> IMMEDIATE_RETRY
+    
+    %% 文件检查流程
+    CONNECTING --> STAT_FILE
+    STAT_FILE --> FILE_EXISTS
+    FILE_EXISTS -->|是| CHECK_TYPE
+    FILE_EXISTS -->|否| FILE_NOT_READY
+    CHECK_TYPE --> FIFO_TYPE
+    FIFO_TYPE -->|是| OPEN_FILE
+    FIFO_TYPE -->|否| FILE_NOT_READY
+    FILE_NOT_READY --> SCHEDULED_RETRY
+    
+    %% 文件打开流程
+    OPEN_FILE --> FD_SUCCESS
+    FD_SUCCESS -->|成功| CREATE_AIO_OBJ
+    FD_SUCCESS -->|失败| FD_ERROR
+    FD_ERROR --> SCHEDULED_RETRY
+    
+    %% AIO创建流程
+    CREATE_AIO_OBJ --> AIO_CONTEXT
+    AIO_CONTEXT --> REGISTER_CALLBACK
+    REGISTER_CALLBACK --> ATEXIT_REGISTER
+    ATEXIT_REGISTER --> IMMEDIATE_READ
+    IMMEDIATE_READ --> CONNECTED
+    
+    %% 生命周期事件
+    STARTUP_EVENT --> TIMER_INIT
+    EOF_EVENT --> CLOSE_OLD
+    ERROR_EVENT --> CLOSE_OLD
+    EXIT_EVENT --> CLOSE_OLD
+    CLOSE_OLD --> IMMEDIATE_RETRY
+    
+    %% 特殊处理
+    CONNECTED --> EOF_EVENT
+    CONNECTED --> ERROR_EVENT
+    
+    %% 样式定义
+    classDef stateBox fill:#e8f5e8,stroke:#2e7d32,stroke-width:3px
+    classDef retryMech fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef fileCheck fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef fdMgmt fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef aioMgmt fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    classDef lifecycle fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    classDef special fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef decision fill:#ffecb3,stroke:#ff8f00,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    
+    class DISCONNECTED,CONNECTING,CONNECTED stateBox
+    class TIMER_INIT,IMMEDIATE_RETRY,SCHEDULED_RETRY,RETRY_INTERVAL retryMech
+    class STAT_FILE,CHECK_TYPE,FILE_NOT_READY fileCheck
+    class OPEN_FILE,OPEN_FLAGS,FD_ERROR fdMgmt
+    class CREATE_AIO_OBJ,AIO_CONTEXT,REGISTER_CALLBACK,ATEXIT_REGISTER aioMgmt
+    class STARTUP_EVENT,EOF_EVENT,ERROR_EVENT,EXIT_EVENT lifecycle
+    class IMMEDIATE_READ,CLOSE_OLD,ERROR_RECOVERY special
+    class FILE_EXISTS,FIFO_TYPE,FD_SUCCESS decision
+    class ERROR error 

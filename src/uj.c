@@ -26,188 +26,231 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdarg.h>
-#include <stdio.h>
-#include "uj.h"
-#include "xq.h"     // %J - txjob only
-#include "kwcrc.h"
+// 文件功能：高性能JSON解析器和编码器实现 - μJSON (MicroJSON)
+// 作用：为BasicStation提供轻量级、高效的JSON处理能力
+// 核心功能：
+// 1. 流式JSON解析，支持大型JSON文档的内存优化处理
+// 2. 类型安全的JSON编码，防止格式错误和缓冲区溢出
+// 3. 专业的LoRaWAN数据类型支持(EUI、MAC、时间戳等)
+// 4. 高性能CRC校验和字符串匹配算法
+// 5. 灵活的printf风格格式化输出扩展
+
+#include <stdarg.h>           // 变参函数支持：va_list、va_start、va_end
+#include <stdio.h>            // 标准输入输出：snprintf、vsnprintf等
+#include "uj.h"               // μJSON核心接口定义和数据结构
+#include "xq.h"               // 扩展队列支持：%J格式(txjob专用)
+#include "kwcrc.h"            // 关键字CRC算法：字符串哈希和快速匹配
 
 
+// 函数功能：从JSON流中读取下一个字符
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：下一个字符的ASCII码，到达末尾返回0
+// 调用时机：JSON解析过程中逐字符读取时调用
 static int nextChar (ujdec_t* dec) {
-    if( dec->read_pos >= dec->json_end ) {
-        dec->read_pos++;
-        return 0;
+    if( dec->read_pos >= dec->json_end ) {              // 如果已到达JSON数据末尾
+        dec->read_pos++;                                // 移动指针(用于错误检测)
+        return 0;                                       // 返回EOF标识
     }
-    return *dec->read_pos++;
+    return *dec->read_pos++;                            // 返回当前字符并移动到下一位置
 }
 
+// 函数功能：回退一个字符位置(用于预读后的回退)
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：无
+// 调用时机：需要撤销上一次nextChar操作时调用
 static void backChar (ujdec_t* dec) {
-    dec->read_pos -= 1;
+    dec->read_pos -= 1;                                 // 将读取位置后退一个字符
 }
 
+// 函数功能：跳过空白字符和注释，返回下一个有效字符
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：下一个非空白字符的ASCII码
+// 调用时机：需要跳过格式化字符获取有效JSON令牌时调用
 static int skipWsp (ujdec_t* dec) {
     while(1) {
-        int c = nextChar(dec);
+        int c = nextChar(dec);                          // 读取下一个字符
         switch( c ) {
-        case '\t':
-        case '\r':
-        case '\n':
-        case ' ':
-            break;
-        case '/': {
-            if( nextChar(dec) != '*' )
-                uj_error(dec, "Bad start of comment");
-            int d = 0;
+        case '\t':                                      // 制表符
+        case '\r':                                      // 回车符
+        case '\n':                                      // 换行符
+        case ' ':                                       // 空格符
+            break;                                      // 跳过这些空白字符
+        case '/': {                                     // 可能是注释开始
+            if( nextChar(dec) != '*' )                  // 检查是否为/*注释格式
+                uj_error(dec, "Bad start of comment");  // 错误：不支持//注释
+            int d = 0;                                  // 前一个字符记录
             while(1) {
-                c = nextChar(dec);
-                if( c == 0 ) {  // or limit to a single line: || c == '\n'
-                    uj_error(dec, "Unterminated /*.. comment");
+                c = nextChar(dec);                      // 继续读取注释内容
+                if( c == 0 ) {                          // 如果到达文件末尾
+                    uj_error(dec, "Unterminated /*.. comment");  // 错误：注释未结束
                     // NOT REACHED
                 }
-                if( d == '*' && c == '/' )
-                    break;
-                d = c;
+                if( d == '*' && c == '/' )              // 找到注释结束标记*/
+                    break;                              // 退出注释解析循环
+                d = c;                                  // 记录当前字符作为下次比较
             }
             break;
         }
         default:
-            return c;
+            return c;                                   // 返回第一个非空白字符
         }
     }
 }
 
 
+// 函数功能：解析并验证JSON字面量(null、true、false)
+// 参数说明：dec - JSON解码器状态指针
+//          s - 期望的字面量字符串
+// 返回值：无(验证失败会调用uj_error)
+// 调用时机：解析JSON布尔值或null值时调用
 static void nextLit (ujdec_t* dec, const char* s) {
-    while( nextChar(dec) == s[0] ) {
-        if( *++s == 0 )
-            return;
+    while( nextChar(dec) == s[0] ) {                    // 逐字符比较期望的字面量
+        if( *++s == 0 )                                 // 如果完全匹配
+            return;                                     // 解析成功，返回
     }
-    uj_error(dec, "Expecting literal (null,true,false)");
+    uj_error(dec, "Expecting literal (null,true,false)");  // 错误：字面量不匹配
     // NOT REACHED
 }
 
 
+// 函数功能：解析JSON字符串，处理转义字符和Unicode编码
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：无(解析结果存储在dec->str中)
+// 调用时机：遇到JSON字符串时调用，支持转义和UTF-8编码
 static void parseString (ujdec_t* dec) {
-    ujcrc_t crc = 0;
-    char* wp = (dec->mode & UJ_MODE_SKIP) ? NULL : dec->read_pos;
-    dec->str.beg = dec->read_pos;
-    assert(dec->read_pos[-1] == '"');
+    ujcrc_t crc = 0;                                    // 初始化CRC校验值
+    char* wp = (dec->mode & UJ_MODE_SKIP) ? NULL : dec->read_pos;  // 写入指针(跳过模式时为NULL)
+    dec->str.beg = dec->read_pos;                       // 记录字符串开始位置
+    assert(dec->read_pos[-1] == '"');                   // 确认前一个字符是引号
+    
     while(1) {
-        int c = nextChar(dec);
+        int c = nextChar(dec);                          // 读取字符串内容
         switch( c ) {
-        case 0: {
-            uj_error(dec, "Malformed string - no closing quote");
+        case 0: {                                       // 遇到文件结束
+            uj_error(dec, "Malformed string - no closing quote");  // 错误：字符串未闭合
             // NOT REACHED
         }
-        case '"': {
-            // Make it a C string - assumes no \0 in the middle
-            if( wp ) *wp = 0;
-            dec->str.crc = UJ_FINISH_CRC(crc);
-            dec->str.len = wp - dec->str.beg;
-            return;
+        case '"': {                                     // 遇到结束引号
+            // 转换为C字符串 - 假设中间没有\0字符
+            if( wp ) *wp = 0;                           // 添加字符串结束符
+            dec->str.crc = UJ_FINISH_CRC(crc);          // 完成CRC计算
+            dec->str.len = wp - dec->str.beg;           // 计算字符串长度
+            return;                                     // 解析完成
         }
-        case '\\': {
-            switch( c = nextChar(dec) ) {
-            case '"':
-            case '\\':
-            case '/': break;
-            case 'b': c = '\b'; break;
-            case 'f': c = '\f'; break;
-            case 'n': c = '\n'; break;
-            case 'r': c = '\r'; break;
-            case 't': c = '\t'; break;
-            case 'u': {
-                c = ((rt_hexDigit(nextChar(dec)) << 12) |
+        case '\\': {                                    // 遇到转义字符
+            switch( c = nextChar(dec) ) {               // 获取转义类型
+            case '"':                                   // 转义引号
+            case '\\':                                  // 转义反斜杠
+            case '/': break;                            // 转义斜杠，直接使用
+            case 'b': c = '\b'; break;                  // 退格符
+            case 'f': c = '\f'; break;                  // 换页符
+            case 'n': c = '\n'; break;                  // 换行符
+            case 'r': c = '\r'; break;                  // 回车符
+            case 't': c = '\t'; break;                  // 制表符
+            case 'u': {                                 // Unicode转义序列\uXXXX
+                c = ((rt_hexDigit(nextChar(dec)) << 12) |  // 解析4位十六进制数
                      (rt_hexDigit(nextChar(dec)) <<  8) |
                      (rt_hexDigit(nextChar(dec)) <<  4) |
                      (rt_hexDigit(nextChar(dec))      ) );
-                if( c < 0 ) {
+                if( c < 0 ) {                           // 十六进制解析失败
                     uj_error(dec, "Malformed \\u escape sequence");
                     // NOT REACHED
                 }
-                if( c >= (1<<7) ) {
-                    char cu[2];
+                if( c >= (1<<7) ) {                     // 需要UTF-8编码的字符
+                    char cu[2];                         // UTF-8编码缓冲区
                     int ci;
-                    if( c < (1<<11) ) {  // 2^7 <= c < 2^11   ==> 5+6 bits
+                    if( c < (1<<11) ) {                 // 2^7 <= c < 2^11 => 5+6位编码
                         ci = 1;
-                        cu[1] = 0xC0 | (c>>6);   // encode 5 bits
-                    } else {             // 2^11 <= c < 2^16  ==> 4+6+6 bits
+                        cu[1] = 0xC0 | (c>>6);          // 编码高5位
+                    } else {                            // 2^11 <= c < 2^16 => 4+6+6位编码
                         ci = 0;
-                        cu[0] = 0xE0 | (c>>12);  // encode 4 bits
-                        cu[1] = 0x80 | ((c>>6)&0x3F);   // 6 bits
+                        cu[0] = 0xE0 | (c>>12);         // 编码高4位
+                        cu[1] = 0x80 | ((c>>6)&0x3F);  // 编码中间6位
                     }
-                    for(; ci < 2; ci++ ) {
-                        if( wp ) *wp++ = cu[ci];
-                        crc = UJ_UPDATE_CRC(crc,cu[ci]);
+                    for(; ci < 2; ci++ ) {              // 写入UTF-8编码字节
+                        if( wp ) *wp++ = cu[ci];        // 写入编码字节
+                        crc = UJ_UPDATE_CRC(crc,cu[ci]); // 更新CRC
                     }
-                    c = 0x80|(c&0x3F);  // encode 6 bits
+                    c = 0x80|(c&0x3F);                  // 编码低6位
                 }
                 break;
             }
             default:
-                uj_error(dec, "Illegally escaped character");
+                uj_error(dec, "Illegally escaped character");  // 错误：非法转义字符
                 // NOT REACHED
             }
         }
         }
-        if( wp ) *wp++ = c;
-        crc = UJ_UPDATE_CRC(crc,c);
+        if( wp ) *wp++ = c;                             // 写入处理后的字符
+        crc = UJ_UPDATE_CRC(crc,c);                     // 更新CRC校验值
     }
 }
 
+// 函数功能：解析十进制数字序列
+// 参数说明：dec - JSON解码器状态指针
+//          pv - 输出数值指针
+//          pn - 输出数字个数指针
+// 返回值：数字序列后的第一个非数字字符
+// 调用时机：解析JSON数字的整数部分、小数部分或指数部分时调用
 static int decDigits (ujdec_t* dec, uL_t* pv, int* pn) {
-    uL_t v = 0;
-    int c, n = 0;
-    while( (c = nextChar(dec)) >= '0' && c <= '9' ) {
-        v = v*10 + c - '0';
-        n++;
+    uL_t v = 0;                                         // 初始化数值
+    int c, n = 0;                                       // 字符和数字计数
+    while( (c = nextChar(dec)) >= '0' && c <= '9' ) {   // 连续读取数字字符
+        v = v*10 + c - '0';                             // 累加数值
+        n++;                                            // 增加数字计数
     }
-    if( n == 0 ) {
-        uj_error(dec, "Expecting some decimal digits");
+    if( n == 0 ) {                                      // 如果没有找到数字
+        uj_error(dec, "Expecting some decimal digits");  // 错误：期望数字
         // NOT REACHED
     }
-    *pn = n;
-    *pv = v;
-    return c;
+    *pn = n;                                            // 返回数字个数
+    *pv = v;                                            // 返回解析的数值
+    return c;                                           // 返回终止字符
 }
 
 
+// 函数功能：解析JSON数字(支持整数、小数、科学计数法)
+// 参数说明：dec - JSON解码器状态指针
+//          signum - 数字符号(1为正数，-1为负数)
+// 返回值：无(解析结果存储在dec->type和dec->snum/dec->fnum中)
+// 调用时机：遇到JSON数字时调用，支持完整的JSON数字格式
 static void parseNumber (ujdec_t* dec, int signum) {
-    uL_t num;
-    int  dummy;
-    uL_t frac = 0;
-    int  nFrac = 0;
-    sL_t exp;
-    int  expSign = 0;  // no exponent
+    uL_t num;                                           // 整数部分
+    int  dummy;                                         // 临时变量
+    uL_t frac = 0;                                      // 小数部分
+    int  nFrac = 0;                                     // 小数位数
+    sL_t exp;                                           // 指数值
+    int  expSign = 0;                                   // 指数符号(0=无指数)
     int  c;
 
-    c = decDigits(dec, &num, &dummy);
-    if( c=='.' ) {
-        c = decDigits(dec, &frac, &nFrac);
+    c = decDigits(dec, &num, &dummy);                   // 解析整数部分
+    if( c=='.' ) {                                      // 如果有小数点
+        c = decDigits(dec, &frac, &nFrac);              // 解析小数部分
     }
-    if( c=='e' || c=='E' ) {
-        expSign = 1;
-        c = nextChar(dec);
-        /**/ if( c=='-' ) expSign = -1;
-        else if( c!='+' ) backChar(dec);
-        decDigits(dec, (uL_t*)&exp, &dummy);
+    if( c=='e' || c=='E' ) {                            // 如果有科学计数法指数
+        expSign = 1;                                    // 默认正指数
+        c = nextChar(dec);                              // 读取指数符号
+        /**/ if( c=='-' ) expSign = -1;                 // 负指数
+        else if( c!='+' ) backChar(dec);                // 回退非符号字符
+        decDigits(dec, (uL_t*)&exp, &dummy);            // 解析指数值
     }
-    backChar(dec);
-    if( nFrac == 0 && expSign == 0 ) {
-        dec->type = signum < 0 ? UJ_SNUM: UJ_UNUM;
-        dec->snum = signum * num;
+    backChar(dec);                                      // 回退最后读取的字符
+    
+    if( nFrac == 0 && expSign == 0 ) {                  // 如果是纯整数
+        dec->type = signum < 0 ? UJ_SNUM: UJ_UNUM;      // 设置为有符号或无符号整数
+        dec->snum = signum * num;                       // 存储整数值
         return;
     }
-    double f = frac;
-    while( --nFrac >= 0 )
+    double f = frac;                                    // 转换为浮点数
+    while( --nFrac >= 0 )                               // 调整小数位数
         f /= 10;
-    f += (double)num;
-    if( expSign != 0 ) {
-        while( --exp >= 0 )
+    f += (double)num;                                   // 加上整数部分
+    if( expSign != 0 ) {                                // 如果有指数
+        while( --exp >= 0 )                             // 应用指数运算
             f = expSign > 0 ? f*10 : f/10;
     }
-    dec->fnum = signum * f;
-    dec->type = UJ_FNUM;
+    dec->fnum = signum * f;                             // 存储最终浮点数
+    dec->type = UJ_FNUM;                                // 设置类型为浮点数
 }
 
 
@@ -389,71 +432,79 @@ void uj_error (ujdec_t* dec, const char* fmt, ...) {
 }
 
 
+// 函数功能：断言JSON解析已到达末尾，验证无剩余内容
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：无(如有剩余内容会调用uj_error)
+// 调用时机：完成JSON解析后验证是否彻底解析完毕
 void uj_assertEOF (ujdec_t* dec) {
-    if( skipWsp(dec) != 0 ) {
-        uj_error(dec, "Expecting EOF but found garbage: %.20s", dec->read_pos-1);
+    if( skipWsp(dec) != 0 ) {                           // 跳过空白字符检查是否到达末尾
+        uj_error(dec, "Expecting EOF but found garbage: %.20s", dec->read_pos-1);  // 错误：还有剩余内容
         // NOT REACHED
     }
 }
 
 
+// 函数功能：解析下一个JSON值，识别类型并进行初步处理
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：识别的JSON值类型(UJ_STRING、UJ_SNUM、UJ_BOOL等)
+// 调用时机：需要读取JSON值时调用，是核心解析入口函数
 ujtype_t uj_nextValue (ujdec_t* dec) {
-    if( dec->type != UJ_UNDEF )
-        return dec->type;
+    if( dec->type != UJ_UNDEF )                         // 如果已有解析结果
+        return dec->type;                               // 直接返回类型
 
-    int c = skipWsp(dec);
-    dec->val = dec->read_pos - 1;
+    int c = skipWsp(dec);                               // 跳过空白字符获取有效字符
+    dec->val = dec->read_pos - 1;                       // 记录值开始位置
 
     switch( c ) {
-    case 0: {
-        uj_error(dec, "Unexpected EOF");
+    case 0: {                                           // 文件结束
+        uj_error(dec, "Unexpected EOF");                // 错误：意外的文件结束
         // NOT REACHED
     }
-    case '"': {
-        dec->type = UJ_STRING;
-        parseString(dec);
+    case '"': {                                         // 字符串值
+        dec->type = UJ_STRING;                          // 设置类型为字符串
+        parseString(dec);                               // 解析字符串内容
         break;
     }
-    case '-': {
-        parseNumber(dec, -1);
+    case '-': {                                         // 负数
+        parseNumber(dec, -1);                           // 解析负数
         break;
     }
-    case '0': case '1': case '2': case '3': case '4':
+    case '0': case '1': case '2': case '3': case '4':   // 正数或零
     case '5': case '6': case '7': case '8': case '9': {
-        backChar(dec);
-        parseNumber(dec, 1);
+        backChar(dec);                                  // 回退数字字符
+        parseNumber(dec, 1);                            // 解析正数
         break;
     }
-    case 't': {
-        nextLit(dec,"true"+1);
-        dec->type = UJ_BOOL;
-        dec->snum = 1;
+    case 't': {                                         // true字面量
+        nextLit(dec,"true"+1);                          // 验证"rue"部分
+        dec->type = UJ_BOOL;                            // 设置类型为布尔值
+        dec->snum = 1;                                  // 设置值为true
         break;
     }
-    case 'f': {
-        nextLit(dec,"false"+1);
-        dec->type = UJ_BOOL;
-        dec->snum = 0;
+    case 'f': {                                         // false字面量
+        nextLit(dec,"false"+1);                         // 验证"alse"部分
+        dec->type = UJ_BOOL;                            // 设置类型为布尔值
+        dec->snum = 0;                                  // 设置值为false
         break;
     }
-    case 'n': {
-        nextLit(dec,"null"+1);
-        dec->type = UJ_NULL;
-        dec->snum = 0;
+    case 'n': {                                         // null字面量
+        nextLit(dec,"null"+1);                          // 验证"ull"部分
+        dec->type = UJ_NULL;                            // 设置类型为null
+        dec->snum = 0;                                  // 设置值为0
         break;
     }
-    case '{':
+    case '{':                                           // 对象或数组
     case '[': {
-        dec->type = c=='{' ? UJ_OBJECT : UJ_ARRAY;
-        backChar(dec);  // enter expects to find opening brace
+        dec->type = c=='{' ? UJ_OBJECT : UJ_ARRAY;      // 根据括号类型设置类型
+        backChar(dec);                                  // 回退开括号(enter函数需要)
         break;
     }
-    default: {
-        uj_error(dec, "Syntax error");
+    default: {                                          // 无法识别的字符
+        uj_error(dec, "Syntax error");                  // 错误：语法错误
         // NOT REACHED
     }
     }
-    return dec->type;
+    return dec->type;                                   // 返回识别的类型
 }
 
 
@@ -487,40 +538,62 @@ ujbuf_t uj_skipValue (ujdec_t* dec) {
 }
 
 
+// 函数功能：初始化JSON解码器，准备解析指定的JSON数据
+// 参数说明：dec - JSON解码器状态指针
+//          json - JSON数据缓冲区指针
+//          jsonlen - JSON数据长度
+// 返回值：无
+// 调用时机：开始解析JSON前必须先调用此函数初始化
 void uj_iniDecoder (ujdec_t* dec, char* json, ujoff_t jsonlen) {
-    memset(dec, 0, sizeof(*dec));
-    dec->json_beg = dec->read_pos = json;
-    dec->json_end = json+jsonlen;
-    dec->nest_level = -1;
+    memset(dec, 0, sizeof(*dec));                       // 清零解码器状态
+    dec->json_beg = dec->read_pos = json;               // 设置JSON开始位置和当前读取位置
+    dec->json_end = json+jsonlen;                       // 设置JSON结束位置
+    dec->nest_level = -1;                               // 初始化嵌套层级为-1(表示顶层)
 }
 
 
 
+// 函数功能：检查当前值是否为null
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：1表示是null，0表示不是null
+// 调用时机：需要检查JSON值是否为null时调用
 int uj_null (ujdec_t* dec) {
-    ujtype_t t = uj_nextValue(dec);
-    return t == UJ_NULL;
+    ujtype_t t = uj_nextValue(dec);                     // 获取下一个值的类型
+    return t == UJ_NULL;                                // 判断是否为null类型
 }
 
+// 函数功能：获取布尔值
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：布尔值(1为true，0为false)
+// 调用时机：期望获取JSON布尔值时调用，类型不匹配会报错
 int uj_bool (ujdec_t* dec) {
-    ujtype_t t = uj_nextValue(dec);
-    if( t != UJ_BOOL )
-        uj_error(dec,"Expecting a bool value");
-    return dec->unum;
+    ujtype_t t = uj_nextValue(dec);                     // 获取下一个值的类型
+    if( t != UJ_BOOL )                                  // 类型检查
+        uj_error(dec,"Expecting a bool value");         // 错误：期望布尔值
+    return dec->unum;                                   // 返回布尔值
 }
 
+// 函数功能：获取有符号整数值
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：有符号长整数值
+// 调用时机：期望获取JSON整数时调用，支持正数和负数
 sL_t uj_int (ujdec_t* dec) {
-    ujtype_t t = uj_nextValue(dec);
-    if( t != UJ_SNUM && t != UJ_UNUM )
-        uj_error(dec,"Expecting an integer value");
+    ujtype_t t = uj_nextValue(dec);                     // 获取下一个值的类型
+    if( t != UJ_SNUM && t != UJ_UNUM )                  // 类型检查：有符号或无符号整数
+        uj_error(dec,"Expecting an integer value");     // 错误：期望整数值
     
-    return dec->snum;
+    return dec->snum;                                   // 返回整数值
 }
 
+// 函数功能：获取无符号整数值
+// 参数说明：dec - JSON解码器状态指针
+// 返回值：无符号长整数值
+// 调用时机：期望获取JSON正整数时调用，负数会报错
 uL_t uj_uint (ujdec_t* dec) {
-    ujtype_t t = uj_nextValue(dec);
-    if( t != UJ_UNUM )
-        uj_error(dec,"Expecting a positive integer value");
-    return dec->unum;
+    ujtype_t t = uj_nextValue(dec);                     // 获取下一个值的类型
+    if( t != UJ_UNUM )                                  // 类型检查：仅接受无符号整数
+        uj_error(dec,"Expecting a positive integer value");  // 错误：期望正整数值
+    return dec->unum;                                   // 返回无符号整数值
 }
 
 double uj_num (ujdec_t* dec) {

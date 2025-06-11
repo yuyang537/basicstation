@@ -1,0 +1,92 @@
+graph TD
+    subgraph "HTTP客户端流程"
+        direction TB
+        Start_C([HTTP客户端开始]) --> http_ini_c[http_ini: 初始化HTTP客户端]
+        http_ini_c --> http_connect_c[http_connect: 建立连接]
+        http_connect_c --> uri_parse_c[解析目标服务器URI]
+        uri_parse_c --> tcp_connect_c[建立TCP连接]
+        tcp_connect_c --> tls_check_c{需要HTTPS?}
+        tls_check_c -->|是| tls_setup_c[设置TLS连接]
+        tls_check_c -->|否| connected_c[连接建立]
+        tls_setup_c --> connected_c
+        
+        connected_c --> req_buf[http_getReqbuf: 获取请求缓冲区]
+        req_buf --> build_req[构造HTTP请求]
+        build_req --> http_request[http_request: 发送请求]
+        http_request --> wait_resp[等待HTTP响应]
+        wait_resp --> http_read[http_read: 读取响应]
+        
+        http_read --> parse_hdr[解析响应头]
+        parse_hdr --> get_status[http_getStatus: 获取状态码]
+        get_status --> check_status{状态码检查}
+        check_status -->|2xx| get_body[http_getBody: 获取响应体]
+        check_status -->|其他| handle_error[处理错误响应]
+        
+        get_body --> more_data{还有更多数据?}
+        more_data -->|是| http_getMore[http_getMore: 读取更多数据]
+        more_data -->|否| process_complete[处理完成]
+        http_getMore --> more_data
+        
+        process_complete --> http_close_c[http_close: 关闭连接]
+        handle_error --> http_close_c
+        http_close_c --> End_C([客户端结束])
+    end
+    
+    subgraph "HTTP服务器流程"
+        direction TB
+        Start_S([HTTP服务器开始]) --> httpd_ini[httpd_ini: 初始化HTTP服务器]
+        httpd_ini --> httpd_listen[httpd_listen: 监听端口]
+        httpd_listen --> wait_conn[等待客户端连接]
+        wait_conn --> httpd_accept[httpd_accept: 接受连接]
+        
+        httpd_accept --> new_conn[创建新连接对象]
+        new_conn --> httpd_read[读取HTTP请求]
+        httpd_read --> parse_req[httpd_parseReqLine: 解析请求行]
+        parse_req --> parse_hdrs[解析请求头]
+        parse_hdrs --> validate_req{请求验证}
+        
+        validate_req -->|失败| send_error[发送错误响应]
+        validate_req -->|成功| process_req[处理请求]
+        
+        process_req --> check_method{请求方法}
+        check_method -->|GET| handle_get[处理GET请求]
+        check_method -->|POST| handle_post[处理POST请求]
+        check_method -->|其他| send_405[发送405 Method Not Allowed]
+        
+        handle_get --> find_resource[查找资源]
+        find_resource --> resource_exist{资源存在?}
+        resource_exist -->|是| send_file[发送文件内容]
+        resource_exist -->|否| send_404[发送404 Not Found]
+        
+        handle_post --> read_body[读取POST数据]
+        read_body --> process_data[处理数据]
+        process_data --> send_response[发送响应]
+        
+        send_file --> build_resp[构造HTTP响应]
+        send_404 --> build_resp
+        send_405 --> build_resp
+        send_error --> build_resp
+        send_response --> build_resp
+        
+        build_resp --> httpd_response[httpd_response: 发送响应]
+        httpd_response --> httpd_write[写入响应数据]
+        httpd_write --> resp_complete[响应完成]
+        
+        resp_complete --> keep_alive{Keep-Alive?}
+        keep_alive -->|是| wait_next[等待下一个请求]
+        keep_alive -->|否| httpd_close[httpd_close: 关闭连接]
+        wait_next --> httpd_read
+        
+        httpd_close --> End_S([服务器连接结束])
+    end
+
+    %% 样式
+    classDef clientState fill:#e3f2fd
+    classDef serverState fill:#f3e5f5
+    classDef processState fill:#e8f5e8
+    classDef errorState fill:#ffebee
+    
+    class Start_C,http_ini_c,http_connect_c,uri_parse_c,tcp_connect_c,connected_c,req_buf,build_req,http_request clientState
+    class Start_S,httpd_ini,httpd_listen,wait_conn,httpd_accept,new_conn,httpd_read,parse_req,parse_hdrs serverState
+    class process_req,handle_get,handle_post,find_resource,read_body,process_data,build_resp,httpd_response processState
+    class handle_error,send_error,send_404,send_405 errorState 

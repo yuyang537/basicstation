@@ -1,0 +1,47 @@
+graph TD
+    A["系统启动<br/>sys_main"] --> B["查找默认EUI<br/>findDefaultEui"]
+    
+    B --> C["扫描网络接口<br/>/sys/class/net"]
+    C --> D{"遍历网络接口"}
+    D --> E["跳过回环接口lo"]
+    D --> F["读取MAC地址<br/>/sys/class/net/[ifc]/address"]
+    
+    F --> G["去除空白字符<br/>stripTrailingWsp"]
+    G --> H["解析EUI格式<br/>parseEui"]
+    
+    H --> I{"解析成功?"}
+    I -->|否| D
+    I -->|是| J{"接口优先级判断"}
+    
+    J --> K["eth接口优先<br/>字母序较小优先"]
+    K --> L["更新选中接口<br/>ifc = dname"]
+    L --> M["更新选中EUI<br/>eui = mac"]
+    M --> D
+    
+    D --> N["设置全局EUI<br/>protoEUI = eui"]
+    N --> O["记录EUI来源<br/>protoEuiSrc = path"]
+    
+    P["配置文件解析<br/>parseStationConf"] --> Q["读取routerid字段"]
+    Q --> R["调用setEui函数"]
+    
+    R --> S{"是文件路径?"}
+    S -->|是| T["读取文件内容<br/>sys_readFile"]
+    S -->|否| U["直接解析字符串"]
+    
+    T --> V["去除尾部空白<br/>stripTrailingWsp"]
+    V --> W["解析EUI<br/>parseEui"]
+    U --> W
+    
+    W --> X{"解析成功?"}
+    X -->|是| Y["设置protoEUI"]
+    X -->|否| Z["记录错误日志"]
+    
+    Y --> AA["更新EUI来源<br/>protoEuiSrc"]
+    
+    BB["命令行参数<br/>--eui-prefix"] --> CC["解析EUI前缀<br/>parseEui"]
+    CC --> DD["设置prefixEUI"]
+    DD --> EE["记录前缀来源<br/>prefixEuiSrc"]
+    
+    FF["EUI验证规则"] --> GG["语法检查<br/>rt_readEui"]
+    FF --> HH["非零检查<br/>nonzero参数"]
+    FF --> II["长度检查<br/>n参数"] 

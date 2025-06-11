@@ -1,0 +1,144 @@
+graph TB
+    subgraph "远程客户端"
+        C1[LNS管理界面]
+        C2[远程终端客户端]
+        C3[运维管理工具]
+    end
+
+    subgraph "网络传输层"
+        N1[LoRaWAN网络]
+        N2[WebSocket连接]
+        N3[S2E协议层]
+    end
+
+    subgraph "BasicStation远程Shell系统"
+        subgraph "消息处理层"
+            M1[s2e_handleRmtsh]
+            M2[JSON消息解析]
+            M3[s2e_onBinary]
+            M4[二进制数据处理]
+        end
+
+        subgraph "会话管理层"
+            S1[rmtshTable会话表]
+            S2[会话状态跟踪]
+            S3[startRmtsh启动]
+            S4[stopRmtsh停止]
+        end
+
+        subgraph "伪终端层"
+            P1[PTY Master主端]
+            P2[PTY Slave从端]
+            P3[终端设置RAW模式]
+            P4[控制终端TIOCSCTTY]
+        end
+
+        subgraph "缓冲管理层"
+            B1[上行缓冲区upbuf]
+            B2[下行缓冲区dnbuf]
+            B3[智能压缩机制]
+            B4[流控制管理]
+        end
+
+        subgraph "异步IO层"
+            A1[up_read上行读取]
+            A2[dn_write下行写入]
+            A3[dn_fill数据填充]
+            A4[AIO事件驱动]
+        end
+
+        subgraph "进程管理层"
+            PR1[Shell进程fork]
+            PR2[进程组管理]
+            PR3[会话setsid]
+            PR4[进程终止SIGKILL]
+        end
+    end
+
+    subgraph "系统Shell环境"
+        SH1["/bin/sh"Shell进程]
+        SH2[命令执行环境]
+        SH3[文件系统访问]
+        SH4[系统调用接口]
+    end
+
+    %% 客户端到系统的流程
+    C1 -->|"rmtsh JSON消息"| N2
+    C2 -->|"用户输入命令"| N2
+    C3 -->|"远程管理操作"| N2
+
+    %% 网络传输流程
+    N2 --> N3
+    N3 --> M1
+    N3 --> M3
+
+    %% JSON消息处理流程
+    M1 --> M2
+    M2 -->|"start/stop命令"| S1
+    S1 --> S3
+    S1 --> S4
+
+    %% 二进制数据处理流程
+    M3 --> M4
+    M4 -->|"用户输入"| B2
+    B2 --> A3
+    A3 --> A2
+
+    %% 会话启动流程
+    S3 --> P1
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    P4 --> PR1
+    PR1 --> PR3
+    PR3 --> SH1
+
+    %% Shell输出处理流程
+    SH1 -->|"命令输出"| P2
+    P2 --> P1
+    P1 --> A1
+    A1 --> B1
+    B1 -->|"压缩管理"| B3
+    B3 --> N3
+
+    %% 数据流控制
+    B4 --> B1
+    B4 --> B2
+    A4 --> A1
+    A4 --> A2
+
+    %% 进程管理流程
+    S4 --> PR4
+    PR4 --> PR2
+
+    %% 系统环境访问
+    SH1 --> SH2
+    SH2 --> SH3
+    SH3 --> SH4
+
+    %% 反向数据流
+    N3 -->|"Shell输出"| N2
+    N2 -->|"命令结果"| C1
+    N2 -->|"终端显示"| C2
+    N2 -->|"运维反馈"| C3
+
+    %% 样式定义
+    classDef clientLayer fill:#e1f5fe
+    classDef networkLayer fill:#f3e5f5
+    classDef messageLayer fill:#fff3e0
+    classDef sessionLayer fill:#e8f5e8
+    classDef ptyLayer fill:#fce4ec
+    classDef bufferLayer fill:#f1f8e9
+    classDef aioLayer fill:#e0f2f1
+    classDef processLayer fill:#fff8e1
+    classDef shellLayer fill:#fafafa
+
+    class C1,C2,C3 clientLayer
+    class N1,N2,N3 networkLayer
+    class M1,M2,M3,M4 messageLayer
+    class S1,S2,S3,S4 sessionLayer
+    class P1,P2,P3,P4 ptyLayer
+    class B1,B2,B3,B4 bufferLayer
+    class A1,A2,A3,A4 aioLayer
+    class PR1,PR2,PR3,PR4 processLayer
+    class SH1,SH2,SH3,SH4 shellLayer 

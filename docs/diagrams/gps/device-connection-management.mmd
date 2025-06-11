@@ -1,0 +1,177 @@
+flowchart TD
+    %% GPS设备连接管理流程图
+    %% 展示设备初始化、连接管理、自动重连的完整机制
+    
+    START([GPS初始化开始<br/>sys_enableGPS])
+    
+    %% 初始化阶段
+    CHECK_DEVICE{设备路径配置?}
+    NO_DEVICE[GPS功能禁用<br/>return 1]
+    INIT_PARAMS[初始化参数<br/>baud=9600, ubx=1]
+    INIT_TIMER[初始化重连定时器<br/>rt_iniTimer]
+    
+    %% 首次连接
+    FIRST_CONNECT[首次连接尝试<br/>gps_reopen]
+    CONNECT_OK{连接成功?}
+    CONNECT_FAILED[连接失败<br/>GPS禁用]
+    
+    %% 位置文件读取
+    READ_LASTPOS[读取上次位置<br/>lastpos文件]
+    PARSE_LASTPOS[解析JSON格式<br/>uj_decode]
+    LOAD_POSITION[加载原始坐标<br/>orig_lat, orig_lon]
+    
+    %% 设备重连流程
+    subgraph "设备连接器 gps_reopen"
+        CLOSE_EXISTING[关闭现有连接<br/>aio_close]
+        DETECT_TYPE[检测设备类型<br/>stat检查]
+        IS_FIFO{是FIFO管道?}
+        
+        %% FIFO模式连接
+        subgraph "FIFO模式"
+            OPEN_FIFO[打开FIFO<br/>O_RDONLY|O_NONBLOCK]
+            FIFO_ERROR{打开成功?}
+            SET_FIFO_PARAMS[设置FIFO参数<br/>isTTY=0, garbageCnt=0]
+        end
+        
+        %% TTY模式连接
+        subgraph "TTY模式"
+            CHECK_PROCESS[检查进程占用<br/>sys_findPids]
+            PROCESS_CONFLICT{设备被占用?}
+            FATAL_CONFLICT[致命错误<br/>设备被其他进程占用]
+            
+            SET_BAUDRATE[设置波特率<br/>9600-230400]
+            OPEN_TTY[打开TTY设备<br/>O_RDWR|O_NOCTTY|O_NONBLOCK]
+            TTY_ERROR{打开成功?}
+            
+            GET_TTY_ATTR[获取TTY属性<br/>tcgetattr]
+            SAVE_TTY_ATTR[保存原始属性<br/>saved_tio]
+            CONFIG_TTY[配置TTY参数<br/>波特率+控制标志]
+            APPLY_TTY_ATTR[应用TTY配置<br/>tcsetattr]
+            FLUSH_TTY[刷新TTY缓冲<br/>tcflush]
+            
+            SET_TTY_PARAMS[设置TTY参数<br/>isTTY=1, garbageCnt=4]
+            SEND_UBX_ENABLE[发送UBX使能<br/>NAV-TIMEGPS配置]
+        end
+        
+        SETUP_AIO[设置异步IO<br/>aio_open]
+        REGISTER_CLEANUP[注册清理函数<br/>atexit(gps_close)]
+        RESET_BUFFER[重置接收缓冲<br/>gpsfill=0]
+        START_READ[启动数据读取<br/>gps_read]
+    end
+    
+    %% 错误处理和重连
+    subgraph "重连管理器"
+        REOPEN_TIMEOUT[重连超时处理<br/>reopen_timeout]
+        CALC_INTERVAL[计算重连间隔<br/>TTY vs FIFO不同策略]
+        TTY_INTERVAL[TTY重连间隔<br/>GPS_REOPEN_TTY_INTV]
+        FIFO_INTERVAL[FIFO重连间隔<br/>GPS_REOPEN_FIFO_INTV]
+        SET_RETRY_TIMER[设置重试定时器<br/>rt_setTimer]
+        RETRY_CONNECT[重试连接<br/>调用gps_reopen]
+    end
+    
+    %% 运行时错误处理
+    subgraph "运行时错误处理"
+        READ_EOF[检测到EOF<br/>设备断开]
+        READ_ERROR[读取错误<br/>非EAGAIN错误]
+        CLOSE_AIO[关闭AIO连接<br/>aio_close]
+        TRIGGER_REOPEN[触发重连<br/>reopen_timeout(NULL)]
+        FATAL_READ_ERROR[致命读取错误<br/>rt_fatal]
+    end
+    
+    %% 清理和关闭
+    subgraph "清理管理器 gps_close"
+        CHECK_AIO_NULL{AIO连接存在?}
+        RESTORE_TTY[恢复TTY属性<br/>tcsetattr原始设置]
+        RESTORE_ERROR{恢复成功?}
+        LOG_RESTORE_WARN[记录恢复警告]
+        FLUSH_TTY_FINAL[最终刷新TTY<br/>tcflush]
+        CLOSE_AIO_FINAL[关闭AIO连接<br/>aio_close]
+        RESET_STATE[重置状态<br/>aio=NULL, isTTY=0]
+    end
+    
+    %% 主流程连接
+    START --> CHECK_DEVICE
+    CHECK_DEVICE -->|NULL| NO_DEVICE
+    CHECK_DEVICE -->|有效| INIT_PARAMS
+    INIT_PARAMS --> INIT_TIMER
+    INIT_TIMER --> FIRST_CONNECT
+    FIRST_CONNECT --> CONNECT_OK
+    CONNECT_OK -->|失败| CONNECT_FAILED
+    CONNECT_OK -->|成功| READ_LASTPOS
+    READ_LASTPOS --> PARSE_LASTPOS
+    PARSE_LASTPOS --> LOAD_POSITION
+    
+    %% 重连流程连接
+    FIRST_CONNECT --> CLOSE_EXISTING
+    RETRY_CONNECT --> CLOSE_EXISTING
+    CLOSE_EXISTING --> DETECT_TYPE
+    DETECT_TYPE --> IS_FIFO
+    
+    %% FIFO分支
+    IS_FIFO -->|是| OPEN_FIFO
+    OPEN_FIFO --> FIFO_ERROR
+    FIFO_ERROR -->|失败| REOPEN_TIMEOUT
+    FIFO_ERROR -->|成功| SET_FIFO_PARAMS
+    SET_FIFO_PARAMS --> SETUP_AIO
+    
+    %% TTY分支
+    IS_FIFO -->|否| CHECK_PROCESS
+    CHECK_PROCESS --> PROCESS_CONFLICT
+    PROCESS_CONFLICT -->|是| FATAL_CONFLICT
+    PROCESS_CONFLICT -->|否| SET_BAUDRATE
+    SET_BAUDRATE --> OPEN_TTY
+    OPEN_TTY --> TTY_ERROR
+    TTY_ERROR -->|失败| REOPEN_TIMEOUT
+    TTY_ERROR -->|成功| GET_TTY_ATTR
+    GET_TTY_ATTR --> SAVE_TTY_ATTR
+    SAVE_TTY_ATTR --> CONFIG_TTY
+    CONFIG_TTY --> APPLY_TTY_ATTR
+    APPLY_TTY_ATTR --> FLUSH_TTY
+    FLUSH_TTY --> SET_TTY_PARAMS
+    SET_TTY_PARAMS --> SEND_UBX_ENABLE
+    SEND_UBX_ENABLE --> SETUP_AIO
+    
+    %% 共同路径
+    SETUP_AIO --> REGISTER_CLEANUP
+    REGISTER_CLEANUP --> RESET_BUFFER
+    RESET_BUFFER --> START_READ
+    
+    %% 重连机制
+    REOPEN_TIMEOUT --> CALC_INTERVAL
+    CALC_INTERVAL --> TTY_INTERVAL
+    CALC_INTERVAL --> FIFO_INTERVAL
+    TTY_INTERVAL --> SET_RETRY_TIMER
+    FIFO_INTERVAL --> SET_RETRY_TIMER
+    SET_RETRY_TIMER --> RETRY_CONNECT
+    
+    %% 运行时错误处理
+    READ_EOF --> CLOSE_AIO
+    READ_ERROR --> FATAL_READ_ERROR
+    CLOSE_AIO --> TRIGGER_REOPEN
+    TRIGGER_REOPEN --> REOPEN_TIMEOUT
+    
+    %% 清理流程
+    REGISTER_CLEANUP --> CHECK_AIO_NULL
+    CHECK_AIO_NULL -->|否| RESET_STATE
+    CHECK_AIO_NULL -->|是| RESTORE_TTY
+    RESTORE_TTY --> RESTORE_ERROR
+    RESTORE_ERROR -->|失败| LOG_RESTORE_WARN
+    RESTORE_ERROR -->|成功| FLUSH_TTY_FINAL
+    LOG_RESTORE_WARN --> FLUSH_TTY_FINAL
+    FLUSH_TTY_FINAL --> CLOSE_AIO_FINAL
+    CLOSE_AIO_FINAL --> RESET_STATE
+    
+    %% 颜色样式
+    classDef startEnd fill:#c8e6c9
+    classDef process fill:#e1f5fe
+    classDef decision fill:#fff3e0
+    classDef error fill:#ffcdd2
+    classDef config fill:#f3e5f5
+    classDef timer fill:#e8f5e8
+    
+    class START,NO_DEVICE,LOAD_POSITION startEnd
+    class INIT_PARAMS,CLOSE_EXISTING,OPEN_FIFO,OPEN_TTY,SETUP_AIO process
+    class CHECK_DEVICE,CONNECT_OK,IS_FIFO,FIFO_ERROR,TTY_ERROR decision
+    class CONNECT_FAILED,FATAL_CONFLICT,FATAL_READ_ERROR error
+    class CONFIG_TTY,SET_FIFO_PARAMS,SET_TTY_PARAMS config
+    class INIT_TIMER,REOPEN_TIMEOUT,SET_RETRY_TIMER timer 

@@ -1,0 +1,137 @@
+graph TB
+    %% BasicStation Web服务器模块架构图
+    
+    subgraph "客户端层"
+        BROWSER[Web浏览器]
+        API_CLIENT[API客户端]
+        MGMT_TOOL[管理工具]
+    end
+    
+    subgraph "Web服务器模块 (web.c)"
+        direction TB
+        
+        subgraph "服务器核心"
+            WEB_INSTANCE[Web实例<br/>web_t结构]
+            HTTPD[HTTP服务器<br/>httpd_t]
+            TIMEOUT[超时定时器<br/>tmr_t]
+        end
+        
+        subgraph "事件处理系统"
+            EVENT_LOOP[事件循环<br/>web_onev函数]
+            REQ_EVENT[REQUEST事件<br/>HTTP请求处理]
+            DEAD_EVENT[DEAD事件<br/>连接死亡处理]
+            CLOSE_EVENT[CLOSED事件<br/>连接关闭处理]
+        end
+        
+        subgraph "请求路由系统"
+            ROUTER[路由器<br/>web_route函数]
+            PATH_PARSE[路径解析<br/>httpd_parseReqLine]
+            CRC_MATCH[CRC哈希匹配<br/>pathcrc比较]
+        end
+        
+        subgraph "内容服务"
+            STATIC_FILE[静态文件服务<br/>sys_webFile]
+            GZIP_DETECT[Gzip检测<br/>magic number识别]
+            DYNAMIC_API[动态API处理<br/>处理器函数]
+        end
+        
+        subgraph "请求处理器"
+            HANDLER_TABLE[处理器映射表<br/>HANDLERS数组]
+            API_HANDLER[API处理器<br/>handle_api]
+            VERSION_HANDLER[版本处理器<br/>handle_version]
+            SYS_HANDLERS[系统处理器<br/>SYS_HANDLERS]
+            AUTH_HANDLERS[认证处理器<br/>AUTH_HANDLERS]
+        end
+        
+        subgraph "响应生成"
+            HTTP_RESP[HTTP响应生成器]
+            JSON_ENCODER[JSON编码器<br/>uj_enc*函数]
+            ERROR_RESP[错误响应生成器<br/>400/404/500等]
+        end
+    end
+    
+    subgraph "系统服务层"
+        SYS_API[系统接口<br/>sys_iniWeb<br/>sys_stopWeb]
+        FILE_SYS[文件系统<br/>sys_webFile]
+        VERSION_SYS[版本系统<br/>sys_version]
+        AUTH_SYS[认证系统<br/>web_authini]
+    end
+    
+    subgraph "底层网络"
+        TCP_SOCKET[TCP Socket]
+        AIO_LOOP[异步IO循环<br/>aio事件系统]
+    end
+    
+    %% 客户端连接
+    BROWSER --> WEB_INSTANCE
+    API_CLIENT --> WEB_INSTANCE
+    MGMT_TOOL --> WEB_INSTANCE
+    
+    %% 服务器内部流程
+    WEB_INSTANCE --> HTTPD
+    WEB_INSTANCE --> TIMEOUT
+    HTTPD --> EVENT_LOOP
+    
+    %% 事件处理流程
+    EVENT_LOOP --> REQ_EVENT
+    EVENT_LOOP --> DEAD_EVENT
+    EVENT_LOOP --> CLOSE_EVENT
+    
+    %% 请求处理流程
+    REQ_EVENT --> PATH_PARSE
+    PATH_PARSE --> ROUTER
+    ROUTER --> STATIC_FILE
+    ROUTER --> CRC_MATCH
+    
+    %% 静态文件处理
+    STATIC_FILE --> GZIP_DETECT
+    GZIP_DETECT --> HTTP_RESP
+    
+    %% 动态处理
+    CRC_MATCH --> HANDLER_TABLE
+    HANDLER_TABLE --> API_HANDLER
+    HANDLER_TABLE --> VERSION_HANDLER
+    HANDLER_TABLE --> SYS_HANDLERS
+    HANDLER_TABLE --> AUTH_HANDLERS
+    
+    %% API处理
+    API_HANDLER --> JSON_ENCODER
+    VERSION_HANDLER --> JSON_ENCODER
+    JSON_ENCODER --> HTTP_RESP
+    
+    %% 错误处理
+    ROUTER --> ERROR_RESP
+    ERROR_RESP --> HTTP_RESP
+    
+    %% 系统服务集成
+    SYS_API --> WEB_INSTANCE
+    STATIC_FILE --> FILE_SYS
+    VERSION_HANDLER --> VERSION_SYS
+    WEB_INSTANCE --> AUTH_SYS
+    
+    %% 底层网络
+    HTTPD --> TCP_SOCKET
+    TCP_SOCKET --> AIO_LOOP
+    TIMEOUT --> AIO_LOOP
+    
+    %% 连接状态反馈
+    DEAD_EVENT --> HTTPD
+    CLOSE_EVENT --> HTTPD
+    
+    %% 样式定义
+    classDef clientClass fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef serverClass fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef eventClass fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef routerClass fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef handlerClass fill:#e0f2f1,stroke:#00796b,stroke-width:2px
+    classDef systemClass fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef networkClass fill:#f1f8e9,stroke:#558b2f,stroke-width:2px
+    
+    class BROWSER,API_CLIENT,MGMT_TOOL clientClass
+    class WEB_INSTANCE,HTTPD,TIMEOUT serverClass
+    class EVENT_LOOP,REQ_EVENT,DEAD_EVENT,CLOSE_EVENT eventClass
+    class ROUTER,PATH_PARSE,CRC_MATCH,STATIC_FILE,GZIP_DETECT routerClass
+    class HANDLER_TABLE,API_HANDLER,VERSION_HANDLER,SYS_HANDLERS,AUTH_HANDLERS,DYNAMIC_API handlerClass
+    class SYS_API,FILE_SYS,VERSION_SYS,AUTH_SYS systemClass
+    class TCP_SOCKET,AIO_LOOP networkClass
+    class HTTP_RESP,JSON_ENCODER,ERROR_RESP handlerClass 

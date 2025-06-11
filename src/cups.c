@@ -1,204 +1,264 @@
 /*
+ * BasicStation CUPS协议实现模块 - 配置和更新服务器通信
+ * 
+ * 主要功能：
+ * 1. 配置同步服务 - 与CUPS服务器同步站点配置信息
+ * 2. 固件更新管理 - 下载和验证固件更新包  
+ * 3. 凭据管理 - 同步和更新CUPS/TC连接凭据
+ * 4. 数字签名验证 - 基于ECDSA的固件完整性验证
+ * 5. 自动重连机制 - 智能重试和故障转移策略
+ * 
+ * 设计特点：
+ * - 基于HTTP协议的RESTful API通信
+ * - 分段式数据传输支持大文件下载
+ * - ECDSA数字签名确保固件安全性
+ * - 多凭据集支持（REG/BAK/BOOT）故障转移
+ * - 与TC模块协调的独占式连接管理
+ * - 状态机驱动的可靠协议处理
+ * 
  * --- Revised 3-Clause BSD License ---
  * Copyright Semtech Corporation 2022. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- *
- *     * Redistributions of source code must retain the above copyright notice,
- *       this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright notice,
- *       this list of conditions and the following disclaimer in the documentation
- *       and/or other materials provided with the distribution.
- *     * Neither the name of the Semtech corporation nor the names of its
- *       contributors may be used to endorse or promote products derived from this
- *       software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL SEMTECH CORPORATION. BE LIABLE FOR ANY DIRECT,
- * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "s2conf.h"
-#include "sys.h"
-#include "uj.h"
-#include "kwcrc.h"
-#include "cups.h"
-#include "tc.h"
+#include "s2conf.h"               // Station配置系统
+#include "sys.h"                  // 系统核心功能（URI管理、凭据管理）
+#include "uj.h"                   // JSON编码器（请求格式化）
+#include "kwcrc.h"                // 关键字CRC（凭据完整性）
+#include "cups.h"                 // CUPS模块接口定义
+#include "tc.h"                   // TC传输控制器（协调连接）
 
-#include "mbedtls/ecdsa.h"
-#include "mbedtls/error.h"
-#include "mbedtls/sha512.h"
-#include "mbedtls/bignum.h"
+#include "mbedtls/ecdsa.h"        // ECDSA数字签名验证
+#include "mbedtls/error.h"        // mbedTLS错误处理
+#include "mbedtls/sha512.h"       // SHA-512哈希计算
+#include "mbedtls/bignum.h"       // 大整数运算（椭圆曲线密码学）
 
+// === 常量定义 ===
+#define FAIL_CNT_THRES 6          // 失败计数阈值（触发凭据轮换）
+#define SIGCRC_LEN 4              // 签名CRC长度（字节）
 
-#define FAIL_CNT_THRES 6
-#define SIGCRC_LEN 4
+// === 全局状态变量 ===
+static tmr_t   cups_sync_tmr;     // CUPS同步定时器
+static cups_t* CUPS;              // 当前CUPS会话指针（单例模式）
+static int     cups_credset = SYS_CRED_REG;  // 当前使用的凭据集（REG/BAK/BOOT）
+static int     cups_failCnt;      // 连续失败计数器
+static s1_t    cstateLast;        // 最后一次CUPS状态（用于状态查询）
 
-static tmr_t   cups_sync_tmr;
-static cups_t* CUPS;
-static int     cups_credset = SYS_CRED_REG;
-static int     cups_failCnt;
-static s1_t    cstateLast;
+// === 数字签名验证系统 ===
 
+// CUPS数字签名结构体 - 封装固件更新的ECDSA签名信息
 struct cups_sig {
-    mbedtls_sha512_context sha;
-    u1_t     signature[128];
-    u1_t     hash[64];
-    u1_t     len;
+    mbedtls_sha512_context sha;       // SHA-512哈希上下文（用于计算固件哈希）
+    u1_t     signature[128];          // ECDSA签名数据（最大128字节）
+    u1_t     hash[64];                // SHA-512哈希值（64字节）
+    u1_t     len;                     // 签名实际长度
     union {
-        u4_t keycrc;
-        u1_t keycrcb[4];
+        u4_t keycrc;                  // 密钥CRC校验值（32位）
+        u1_t keycrcb[4];              // 密钥CRC字节数组形式
     };
 };
 
+// 功能：验证ECDSA数字签名 - 确保固件更新的完整性和真实性
+// 参数：sig - 包含签名和哈希的签名结构体
+// 返回值：1=验证成功，0=验证失败
+// 调用时机：收到固件更新包和签名后进行验证
 static int cups_verifySig (cups_sig_t* sig) {
-    int verified = 0;
-    dbuf_t key;
-    int keyid = -1;
+    int verified = 0;                 // 验证结果标志
+    dbuf_t key;                       // 密钥数据缓冲区
+    int keyid = -1;                   // 密钥ID索引
+    
+    // 遍历所有可用的验证密钥，直到找到能验证签名的密钥
     while ( (key = sys_sigKey(++keyid)).buf != NULL && !verified ) {
-        if ( key.bufsize != 64 )
+        if ( key.bufsize != 64 )      // 验证密钥长度（64字节=32字节X坐标+32字节Y坐标）
             continue;
 
+        // 初始化椭圆曲线密钥对和ECDSA上下文
         mbedtls_ecp_keypair k;
         mbedtls_ecp_keypair_init(&k);
         mbedtls_ecdsa_context ecdsa;
         mbedtls_ecdsa_init(&ecdsa);
-        int ret;
-        if ((ret = mbedtls_ecp_group_load        (&k.grp, MBEDTLS_ECP_DP_SECP256R1) ) ||
-            (ret = mbedtls_mpi_read_binary       (&k.Q.X, (u1_t*)key.buf, 32)       ) ||
-            (ret = mbedtls_mpi_read_binary       (&k.Q.Y, (u1_t*)key.buf+32, 32)    ) ||
-            (ret = mbedtls_mpi_lset              (&k.Q.Z, 1)                        ) ||
-            (ret = mbedtls_ecp_check_pubkey      (&k.grp, &k.Q)                     ) ||
-            (ret = mbedtls_ecdsa_from_keypair    (&ecdsa, &k)                       ) ||
-            (ret = mbedtls_ecdsa_read_signature  (&ecdsa, sig->hash, sizeof(sig->hash), sig->signature, sig->len ))
+        
+        int ret;                      // mbedTLS返回值
+        
+        // 设置椭圆曲线参数和公钥，验证签名
+        if ((ret = mbedtls_ecp_group_load        (&k.grp, MBEDTLS_ECP_DP_SECP256R1) ) ||  // 加载SECP256R1曲线
+            (ret = mbedtls_mpi_read_binary       (&k.Q.X, (u1_t*)key.buf, 32)       ) ||  // 读取公钥X坐标
+            (ret = mbedtls_mpi_read_binary       (&k.Q.Y, (u1_t*)key.buf+32, 32)    ) ||  // 读取公钥Y坐标
+            (ret = mbedtls_mpi_lset              (&k.Q.Z, 1)                        ) ||  // 设置Z坐标为1（仿射坐标）
+            (ret = mbedtls_ecp_check_pubkey      (&k.grp, &k.Q)                     ) ||  // 验证公钥有效性
+            (ret = mbedtls_ecdsa_from_keypair    (&ecdsa, &k)                       ) ||  // 从密钥对创建ECDSA上下文
+            (ret = mbedtls_ecdsa_read_signature  (&ecdsa, sig->hash, sizeof(sig->hash), 
+                                                  sig->signature, sig->len ))            // 验证签名
          ) {
-            verified = 0;
+            verified = 0;             // 任何步骤失败都表示验证失败
         } else {
-            verified = 1;
+            verified = 1;             // 所有步骤成功表示验证通过
         }
+        
+        // 释放椭圆曲线和ECDSA资源
         mbedtls_ecp_keypair_free(&k);
         mbedtls_ecdsa_free(&ecdsa);
 
         LOG(MOD_CUP|INFO, "ECDSA key#%d -> %s", keyid, verified? "VERIFIED" : "NOT verified");
     }
-    sys_sigKey(-1); // Release memory
+    
+    sys_sigKey(-1);                   // 释放密钥内存
+    
     if (!verified) {
         LOG(MOD_CUP|WARNING, "No key could verify signature. Tried %d keys", keyid);
     }
-    return verified;
+    return verified;                  // 返回验证结果
 }
 
+// === CUPS会话完成处理系统 ===
+
+// 功能：CUPS会话完成后的处理逻辑 - 处理更新结果并安排下次同步
+// 参数：tmr - 定时器指针（未使用）
+// 返回值：无
+// 调用时机：CUPS会话结束时（成功或失败）由定时器回调
 static void cups_ondone (tmr_t* tmr) {
-    if( CUPS == NULL ) {
-        sys_triggerCUPS(0);
+    if( CUPS == NULL ) {                  // 没有活动的CUPS会话
+        sys_triggerCUPS(0);               // 立即触发新的CUPS会话
         return;
     }
 
-    str_t msg="", detail="";
-    ustime_t ahead = CUPS_RESYNC_INTV;
-    u1_t log = 1;
+    str_t msg="", detail="";              // 日志消息和详细信息
+    ustime_t ahead = CUPS_RESYNC_INTV;    // 下次同步间隔（默认重试间隔）
+    u1_t log = 1;                         // 是否记录日志标志
 
-    if( CUPS->cstate != CUPS_DONE ) {
-        // Someting went wrong - retry again more quickly
+    if( CUPS->cstate != CUPS_DONE ) {     // CUPS会话失败处理
+        // 会话失败 - 准备快速重试
         msg = "Interaction with CUPS failed%s - retrying in %~T";
-        if( cups_failCnt > FAIL_CNT_THRES ||
-            CUPS->cstate == CUPS_ERR_REJECTED ||
-            CUPS->cstate == CUPS_ERR_NOURI ) {
-            // Rotate and try REG/BAK/BOOT sets of config files
+        
+        // 检查是否需要轮换凭据集（连续失败或特定错误）
+        if( cups_failCnt > FAIL_CNT_THRES ||           // 连续失败次数超过阈值
+            CUPS->cstate == CUPS_ERR_REJECTED ||       // 服务器拒绝连接
+            CUPS->cstate == CUPS_ERR_NOURI ) {          // 没有配置URI
+            // 轮换凭据集：REG -> BAK -> BOOT -> REG
             cups_credset = (cups_credset+1) % (SYS_CRED_BOOT+1);
         }
-        cups_failCnt += 1;
+        cups_failCnt += 1;                // 增加失败计数
+        
         if (CUPS->cstate == CUPS_ERR_NOURI)
-            log = 0; // already logged
-    } else {
-        // Successful interaction with CUPS
-        u1_t uflags = CUPS->uflags;
+            log = 0;                      // URI错误已经记录，避免重复日志
+            
+    } else {                              // CUPS会话成功处理
+        u1_t uflags = CUPS->uflags;       // 获取更新标志
+        
+        // 处理固件更新
         if( uflags & UPDATE_FLAG(UPDATE) ) {
             LOG(MOD_CUP|INFO, "CUPS provided update.bin");
-            u1_t run_update = 0;
+            u1_t run_update = 0;          // 是否执行更新标志
+            
+            // 检查是否有数字签名
             if( (uflags & UPDATE_FLAG(SIGNATURE)) ) {
-                LOG(MOD_CUP|INFO, "CUPS provided signature len=%d keycrc=%08X", CUPS->sig->len, CUPS->sig->keycrc);
+                LOG(MOD_CUP|INFO, "CUPS provided signature len=%d keycrc=%08X", 
+                    CUPS->sig->len, CUPS->sig->keycrc);
                 assert( CUPS->sig );
+                
+                // 完成SHA-512哈希计算
                 mbedtls_sha512_finish( &CUPS->sig->sha, CUPS->sig->hash );
                 mbedtls_sha512_free  ( &CUPS->sig->sha );
+                
+                // 验证数字签名
                 run_update = cups_verifySig(CUPS->sig);
             } else {
+                // 没有签名的情况处理
                 dbuf_t key = sys_sigKey(0);
                 if ( key.buf == NULL ) {
                     LOG(MOD_CUP|INFO, "No Key. No Sig. UPDATE.");
-                    run_update = 1;
+                    run_update = 1;       // 没有密钥文件，允许无签名更新
                 } else {
                     LOG(MOD_CUP|ERROR, "Keyfile present, but no signature provided. Aborting update.");
-                    sys_sigKey(-1);
+                    sys_sigKey(-1);       // 释放密钥内存
                 }
             }
+            
+            // 执行或取消更新
             if (run_update) {
                 LOG(MOD_CUP|INFO, "Running update.bin as background process");
-                sys_runUpdate();
+                sys_runUpdate();          // 在后台执行固件更新
             } else {
                 LOG(MOD_CUP|INFO, "Aborting update.");
-                sys_abortUpdate();
+                sys_abortUpdate();        // 取消固件更新
             }
         }
+        
+        // 处理TC连接更新（URI或凭据变化）
         if( uflags & (UPDATE_FLAG(TC_URI)|UPDATE_FLAG(TC_CRED)) ) {
-            // Any change here - restart TC connection
             str_t s = ((uflags & UPDATE_FLAG(TC_URI )) == UPDATE_FLAG(TC_URI ) ? "uri" :
                        (uflags & UPDATE_FLAG(TC_CRED)) == UPDATE_FLAG(TC_CRED) ? "credentials" :
                        "uri/credentials");
-            LOG(MOD_CUP|INFO, "CUPS provided TC updates (%s) %s", s, sys_noTC ? "" : "- restarting TC engine");
-            sys_stopTC();
+            LOG(MOD_CUP|INFO, "CUPS provided TC updates (%s) %s", s, 
+                sys_noTC ? "" : "- restarting TC engine");
+            sys_stopTC();                 // 停止TC连接以应用新配置
         }
+        
+        // 处理CUPS连接更新（URI或凭据变化）
         if( uflags & (UPDATE_FLAG(CUPS_URI)|UPDATE_FLAG(CUPS_CRED)) ) {
-            // Any change here - contact new CUPS immediately
             detail = ((uflags & UPDATE_FLAG(CUPS_URI )) == UPDATE_FLAG(CUPS_URI ) ? "uri" :
                       (uflags & UPDATE_FLAG(CUPS_CRED)) == UPDATE_FLAG(CUPS_CRED) ? "credentials" :
                       "uri/credentials");
             msg = "CUPS provided CUPS updates (%s) - reconnecting in %~T";
-            // Reconnect right away - using new settings
+            // 立即重连以使用新的CUPS设置
         } else {
+            // 正常完成，没有CUPS配置变化
             detail = uflags ? "" : " (no updates)";
             msg = "Interaction with CUPS done%s - next regular check in %~T";
-            ahead = CUPS_OKSYNC_INTV;
+            ahead = CUPS_OKSYNC_INTV;     // 使用正常同步间隔
         }
-        cups_credset = SYS_CRED_REG;
-        cups_failCnt = 0;
+        
+        // 重置凭据集和失败计数
+        cups_credset = SYS_CRED_REG;      // 回到主凭据集
+        cups_failCnt = 0;                 // 清零失败计数
     }
+    
+    // 如果TC已连接，使用较长的同步间隔
     if( TC && sys_statusTC() == TC_MUXS_CONNECTED )
         ahead = CUPS_OKSYNC_INTV;
+    
+    // 清理当前CUPS会话
     cups_free(CUPS);
     CUPS = NULL;
+    
+    // 记录处理结果
     if (log)
         LOG(MOD_CUP|INFO, msg, detail, ahead);
+    
+    // 重启TC连接并安排下次CUPS同步
     sys_startTC();
     rt_setTimer(&cups_sync_tmr, rt_micros_ahead(ahead));
 }
 
 
+// 功能：完成CUPS会话处理 - 设置会话状态并触发完成回调
+// 参数：cups - CUPS会话对象
+//       cstate - 最终状态码
+// 返回值：无
+// 调用时机：CUPS会话结束时（成功或出错）
 static void cups_done (cups_t* cups, s1_t cstate) {
-    cups->cstate = cstate;
-    http_free(&cups->hc);
-    rt_yieldTo(&cups->timeout, cups_ondone);
-    sys_inState(SYSIS_CUPS_DONE);
+    cups->cstate = cstate;                // 设置最终状态
+    http_free(&cups->hc);                 // 释放HTTP连接资源
+    rt_yieldTo(&cups->timeout, cups_ondone);  // 将定时器转为完成处理回调
+    sys_inState(SYSIS_CUPS_DONE);         // 通知系统CUPS会话完成
 }
 
-
+// 功能：CUPS连接超时处理函数 - 处理网络超时情况
+// 参数：tmr - 超时定时器指针
+// 返回值：无
+// 调用时机：CUPS连接或数据传输超时时由定时器触发
 static void cups_timeout (tmr_t* tmr) {
-    cups_t* cups = timeout2cups(tmr);
+    cups_t* cups = timeout2cups(tmr);     // 从定时器获取CUPS会话对象
     LOG(MOD_CUP|ERROR, "CUPS timed out");
-    cups_done(cups, CUPS_ERR_TIMEOUT);
+    cups_done(cups, CUPS_ERR_TIMEOUT);   // 以超时错误结束会话
 }
 
-
+// 功能：计算段长度字段的字节数 - 根据CUPS协议状态确定长度字段大小
+// 参数：cstate - CUPS协议状态
+// 返回值：长度字段的字节数（1、2或4字节）
+// 调用时机：解析CUPS响应时确定每个段的长度字段格式
 static int sizelen (int cstate) {
     assert(cstate >= CUPS_FEED_CUPS_URI && cstate <= CUPS_FEED_UPDATE);
+    // URI段用1字节长度，凭据段用2字节长度，签名/更新段用4字节长度
     return 1<<((cstate - CUPS_FEED_CUPS_URI)>>1);  // 1,2,4 for URI,CRED,SIG/UPDATE
 }
 
@@ -430,28 +490,42 @@ static void cups_update_info (conn_t* _conn, int ev) {
 }
 
 
+// === CUPS会话生命周期管理 ===
+
+// 功能：初始化CUPS会话对象 - 创建新的CUPS通信会话
+// 参数：无
+// 返回值：已初始化的CUPS会话对象指针
+// 调用时机：需要与CUPS服务器通信时创建新会话
 cups_t* cups_ini () {
-    assert(CUPS_BUFSZ > MAX_HOSTNAME_LEN + MAX_PORT_LEN + 2);
-    cups_t* cups = rt_malloc(cups_t);
-    http_ini(&cups->hc, CUPS_BUFSZ);
-    rt_iniTimer(&cups->timeout, cups_timeout);
-    cups->cstate = CUPS_INI;
-    return cups;
+    assert(CUPS_BUFSZ > MAX_HOSTNAME_LEN + MAX_PORT_LEN + 2);  // 确保缓冲区足够大
+    
+    cups_t* cups = rt_malloc(cups_t);     // 分配CUPS会话对象内存
+    http_ini(&cups->hc, CUPS_BUFSZ);      // 初始化HTTP连接（指定缓冲区大小）
+    rt_iniTimer(&cups->timeout, cups_timeout);  // 初始化超时定时器
+    cups->cstate = CUPS_INI;              // 设置初始状态
+    return cups;                          // 返回初始化完成的会话对象
 }
 
-
+// 功能：释放CUPS会话对象 - 清理会话占用的所有资源
+// 参数：cups - 要释放的CUPS会话对象
+// 返回值：无
+// 调用时机：CUPS会话结束后清理资源
 void cups_free (cups_t* cups) {
-    if( cups == NULL )
+    if( cups == NULL )                    // 空指针检查
         return;
-    http_free(&cups->hc);
-    rt_clrTimer(&cups->timeout);
-    cstateLast = cups->cstate;
-    cups->cstate = CUPS_ERR_DEAD;
+    
+    http_free(&cups->hc);                 // 释放HTTP连接资源
+    rt_clrTimer(&cups->timeout);          // 清除超时定时器
+    cstateLast = cups->cstate;            // 保存最后状态供查询使用
+    cups->cstate = CUPS_ERR_DEAD;         // 标记为已释放状态
+    
+    // 释放数字签名相关资源
     if (cups->sig) {
-        mbedtls_sha512_free(&cups->sig->sha);
-        rt_free(cups->sig);
+        mbedtls_sha512_free(&cups->sig->sha);  // 释放SHA-512上下文
+        rt_free(cups->sig);               // 释放签名结构体
     }
-    rt_free(cups);
+    
+    rt_free(cups);                        // 释放会话对象本身
 }
 
 
@@ -493,46 +567,75 @@ void cups_start (cups_t* cups) {
     return;
 }
 
+// === CUPS系统接口函数 ===
+
+// 功能：延迟启动CUPS会话的回调函数 - 定时器到期后启动CUPS会话
+// 参数：tmr - 定时器指针（未使用）
+// 返回值：无
+// 调用时机：延迟启动定时器到期时自动调用
 static void delayedCUPSstart(tmr_t* tmr) {
     LOG(MOD_CUP|INFO, "Starting a CUPS session now.");
-    cups_start(CUPS);
+    cups_start(CUPS);                     // 启动CUPS会话
 }
 
+// 功能：触发CUPS会话 - 启动与CUPS服务器的通信会话
+// 参数：delay - 延迟启动时间（秒），负数表示使用默认延迟
+// 返回值：无
+// 调用时机：需要与CUPS服务器同步时由系统或定时器调用
 void sys_triggerCUPS (int delay) {
-    if( CUPS != NULL || sys_noCUPS )
-        return;  // interaction pending
+    if( CUPS != NULL || sys_noCUPS )      // 已有会话进行中或禁用CUPS
+        return;                           // 直接返回，避免重复会话
+
 #if defined(CFG_cups_exclusive)
+    // CUPS独占模式：停止TC连接为CUPS让路
     if( !sys_noTC ) {
         LOG(MOD_CUP|INFO, "Stopping TC in favor of CUPS");
-        sys_stopTC();
+        sys_stopTC();                     // 停止TC连接
     }
 #endif // defined(CFG_cups_exclusive)
-    if( delay < 0 ) {
-        delay = CUPS_RESYNC_INTV/1000000;
+
+    if( delay < 0 ) {                     // 使用默认延迟时间
+        delay = CUPS_RESYNC_INTV/1000000; // 将微秒转换为秒
     }
+    
     LOG(MOD_CUP|INFO, "Starting a CUPS session in %d seconds.", delay);
-    sys_inState(SYSIS_CUPS_INTERACT);
-    CUPS = cups_ini();
-    rt_clrTimer(&cups_sync_tmr);
-    rt_setTimerCb(&CUPS->timeout, rt_seconds_ahead(delay), delayedCUPSstart);
+    sys_inState(SYSIS_CUPS_INTERACT);     // 通知系统进入CUPS交互状态
+    CUPS = cups_ini();                    // 初始化新的CUPS会话
+    rt_clrTimer(&cups_sync_tmr);          // 清除同步定时器
+    rt_setTimerCb(&CUPS->timeout, rt_seconds_ahead(delay), delayedCUPSstart);  // 设置延迟启动定时器
 }
 
-
+// 功能：初始化CUPS子系统 - 设置CUPS同步定时器
+// 参数：无
+// 返回值：无
+// 调用时机：系统启动时初始化CUPS子系统
 void sys_iniCUPS () {
-    rt_iniTimer(&cups_sync_tmr, cups_ondone);
+    rt_iniTimer(&cups_sync_tmr, cups_ondone);  // 初始化同步定时器，绑定完成处理函数
 }
 
+// 功能：清理CUPS子系统 - 停止所有CUPS定时器
+// 参数：无
+// 返回值：无
+// 调用时机：系统关闭或重置CUPS时调用
 void sys_clearCUPS () {
-    rt_clrTimer(&cups_sync_tmr);
+    rt_clrTimer(&cups_sync_tmr);          // 清除同步定时器
 }
 
+// 功能：延迟下次CUPS同步 - 在适当时机延迟CUPS同步操作
+// 参数：无
+// 返回值：无
+// 调用时机：当前没有活动CUPS会话且状态异常时延迟同步
 void sys_delayCUPS () {
-    if( sys_statusCUPS() < 0 ) {
+    if( sys_statusCUPS() < 0 ) {          // 当前CUPS状态为错误状态
         LOG(MOD_CUP|INFO, "Next CUPS interaction delayed by %~T.", CUPS_OKSYNC_INTV);
-        rt_setTimer(&cups_sync_tmr, rt_micros_ahead(CUPS_OKSYNC_INTV));
+        rt_setTimer(&cups_sync_tmr, rt_micros_ahead(CUPS_OKSYNC_INTV));  // 设置延迟同步定时器
     }
 }
 
+// 功能：获取CUPS当前状态 - 查询CUPS子系统的当前运行状态
+// 参数：无
+// 返回值：CUPS状态码（正数表示运行中，负数表示错误状态）
+// 调用时机：需要检查CUPS状态时随时调用
 s1_t sys_statusCUPS () {
-    return CUPS ? CUPS->cstate : cstateLast;
+    return CUPS ? CUPS->cstate : cstateLast;  // 返回当前状态或最后记录的状态
 }

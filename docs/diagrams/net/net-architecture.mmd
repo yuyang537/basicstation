@@ -1,0 +1,104 @@
+graph TB
+    subgraph "应用层模块"
+        s2e["s2e.c<br/>网关核心"]
+        web["web.c<br/>Web界面"]
+        cups["cups.c<br/>配置服务"]
+        tc["tc.c<br/>测试客户端"]
+    end
+
+    subgraph "网络通信层 (net.c)"
+        direction TB
+        
+        subgraph "WebSocket协议"
+            ws_mgr["WebSocket管理"]
+            ws_conn["连接状态机"]
+            ws_frame["帧解析器"]
+            ws_send["发送缓冲区"]
+            ws_recv["接收缓冲区"]
+        end
+        
+        subgraph "HTTP协议"
+            http_client["HTTP客户端"]
+            http_server["HTTP服务器"]
+            http_parse["HTTP解析器"]
+            uri_parse["URI解析器"]
+        end
+        
+        subgraph "连接管理核心"
+            conn_mgr["conn_t连接对象"]
+            aio_mgr["异步IO管理"]
+            timer_mgr["定时器管理"]
+            buffer_mgr["缓冲区管理"]
+        end
+        
+        subgraph "TLS安全层"
+            tls_handshake["TLS握手"]
+            tls_encrypt["加密传输"]
+            tls_cert["证书验证"]
+        end
+    end
+
+    subgraph "系统抽象层"
+        aio["aio.c<br/>异步IO"]
+        sys["sys.c<br/>系统接口"]
+        rt["rt.c<br/>运行时"]
+    end
+
+    subgraph "外部依赖"
+        mbedtls["mbed TLS<br/>加密库"]
+        socket["系统Socket"]
+    end
+
+    %% 应用层到网络层的连接
+    s2e --> ws_mgr
+    s2e --> http_client
+    web --> http_server
+    cups --> http_server
+    tc --> ws_mgr
+
+    %% WebSocket内部流程
+    ws_mgr --> ws_conn
+    ws_conn --> ws_frame
+    ws_frame --> ws_send
+    ws_frame --> ws_recv
+    
+    %% HTTP内部流程
+    http_client --> http_parse
+    http_server --> http_parse
+    http_parse --> uri_parse
+    
+    %% 连接管理
+    ws_mgr --> conn_mgr
+    http_client --> conn_mgr
+    http_server --> conn_mgr
+    conn_mgr --> aio_mgr
+    conn_mgr --> timer_mgr
+    conn_mgr --> buffer_mgr
+    
+    %% TLS安全
+    conn_mgr --> tls_handshake
+    tls_handshake --> tls_encrypt
+    tls_handshake --> tls_cert
+    
+    %% 系统层依赖
+    aio_mgr --> aio
+    timer_mgr --> rt
+    buffer_mgr --> rt
+    conn_mgr --> sys
+    
+    %% 外部依赖
+    tls_handshake --> mbedtls
+    tls_encrypt --> mbedtls
+    tls_cert --> mbedtls
+    aio --> socket
+
+    %% 样式
+    classDef appLayer fill:#e1f5fe
+    classDef netLayer fill:#f3e5f5
+    classDef sysLayer fill:#fff3e0
+    classDef extLayer fill:#f1f8e9
+    
+    class s2e,web,cups,tc appLayer
+    class ws_mgr,ws_conn,ws_frame,ws_send,ws_recv,http_client,http_server,http_parse,uri_parse,conn_mgr,aio_mgr,timer_mgr,buffer_mgr,tls_handshake,tls_encrypt,tls_cert netLayer
+    class aio,sys,rt sysLayer
+    class mbedtls,socket extLayer 

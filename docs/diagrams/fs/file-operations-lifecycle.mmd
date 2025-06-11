@@ -1,0 +1,174 @@
+stateDiagram-v2
+    [*] --> FileSystem_Ready : fs_ini()
+    
+    state "文件系统就绪" as FileSystem_Ready {
+        [*] --> Idle
+        
+        state "空闲状态" as Idle
+        state "文件查找" as Finding
+        state "文件创建" as Creating
+        state "文件打开" as Opening
+        
+        Idle --> Finding : fs_open(READ_MODE)
+        Idle --> Creating : fs_open(WRITE_MODE)
+        
+        state Finding {
+            [*] --> NormalizeName : checkFilename()
+            NormalizeName --> SearchFlash : fs_findFile()
+            SearchFlash --> FileFound : 找到文件
+            SearchFlash --> FileNotFound : 文件不存在
+        }
+        
+        state Creating {
+            [*] --> ValidateName : checkFilename()
+            ValidateName --> CheckSpace : isFlashFull()
+            CheckSpace --> CreateRecord : fs_handleFile(FILE)
+            CheckSpace --> TriggerGC : 空间不足
+            TriggerGC --> GarbageCollection
+            CreateRecord --> AllocateHandle : 分配文件句柄
+        }
+        
+        Finding --> Opening : 文件存在
+        Creating --> Opening : 创建成功
+        Finding --> [*] : 文件不存在 (errno=ENOENT)
+        Creating --> [*] : 创建失败
+    }
+    
+    state "文件已打开" as FileOpened {
+        [*] --> Ready
+        
+        state "就绪状态" as Ready
+        state "读取操作" as Reading
+        state "写入操作" as Writing
+        state "定位操作" as Seeking
+        
+        Ready --> Reading : fs_read()
+        Ready --> Writing : fs_write() 
+        Ready --> Seeking : fs_lseek()
+        
+        state Reading {
+            [*] --> ValidateFD : fd2fh()
+            ValidateFD --> InvalidFD : 无效文件描述符
+            ValidateFD --> FindDataRecord : fs_findNextDataRecord()
+            FindDataRecord --> NoMoreData : 无更多数据
+            FindDataRecord --> ReadData : 读取数据块
+            ReadData --> CopyToUser : memcpy到用户缓冲区
+            CopyToUser --> UpdateOffset : 更新文件偏移
+            UpdateOffset --> CheckMore : 检查是否需要更多数据
+            CheckMore --> FindDataRecord : 需要更多
+            CheckMore --> ReadComplete : 读取完成
+        }
+        
+        state Writing {
+            [*] --> ValidateWriteFD : fd2fh()
+            ValidateWriteFD --> InvalidWriteFD : 无效文件描述符
+            ValidateWriteFD --> CheckWriteSpace : 检查Flash空间
+            CheckWriteSpace --> CreateDataRecord : fs_handleFile(DATA)
+            CheckWriteSpace --> TriggerWriteGC : 空间不足
+            TriggerWriteGC --> GarbageCollection
+            CreateDataRecord --> WriteToFlash : wrFlashNwp()
+            WriteToFlash --> UpdateWriteOffset : 更新写指针
+            UpdateWriteOffset --> WriteComplete : 写入完成
+        }
+        
+        state Seeking {
+            [*] --> ValidateSeekFD : fd2fh()
+            ValidateSeekFD --> InvalidSeekFD : 无效文件描述符
+            ValidateSeekFD --> CalculateOffset : 计算新偏移
+            CalculateOffset --> FindPosition : 查找对应数据记录
+            FindPosition --> SeekComplete : 定位完成
+            FindPosition --> SeekError : 定位失败
+        }
+        
+        Reading --> Ready : 读取完成
+        Writing --> Ready : 写入完成
+        Seeking --> Ready : 定位完成
+        
+        InvalidFD --> [*] : errno=EBADF
+        NoMoreData --> Ready : EOF
+        ReadComplete --> Ready
+        InvalidWriteFD --> [*] : errno=EBADF
+        WriteComplete --> Ready
+        InvalidSeekFD --> [*] : errno=EBADF
+        SeekComplete --> Ready
+        SeekError --> [*] : errno=EINVAL
+    }
+    
+    state "文件管理操作" as FileManagement {
+        [*] --> ManagementReady
+        
+        state "管理就绪" as ManagementReady
+        state "文件删除" as Deleting
+        state "文件重命名" as Renaming
+        state "状态查询" as Stating
+        
+        ManagementReady --> Deleting : fs_unlink()
+        ManagementReady --> Renaming : fs_rename()
+        ManagementReady --> Stating : fs_stat()
+        
+        state Deleting {
+            [*] --> FindDeleteFile : fs_findFile()
+            FindDeleteFile --> FileNotFoundDel : 文件不存在
+            FindDeleteFile --> CreateDeleteRecord : fs_handleFile(DELETE)
+            CreateDeleteRecord --> DeleteComplete : 删除完成
+        }
+        
+        state Renaming {
+            [*] --> ValidateNames : 验证旧名和新名
+            ValidateNames --> FindRenameFile : fs_findFile()
+            FindRenameFile --> FileNotFoundRen : 文件不存在
+            FindRenameFile --> CreateRenameRecord : fs_handleFile(RENAME)
+            CreateRenameRecord --> RenameComplete : 重命名完成
+        }
+        
+        state Stating {
+            [*] --> FindStatFile : fs_findFile()
+            FindStatFile --> FileNotFoundStat : 文件不存在
+            FindStatFile --> FillStatStruct : 填充stat结构
+            FillStatStruct --> StatComplete : 状态查询完成
+        }
+        
+        FileNotFoundDel --> [*] : errno=ENOENT
+        DeleteComplete --> [*]
+        FileNotFoundRen --> [*] : errno=ENOENT
+        RenameComplete --> [*]
+        FileNotFoundStat --> [*] : errno=ENOENT
+        StatComplete --> [*]
+    }
+    
+    state "垃圾回收" as GarbageCollection {
+        [*] --> GC_Init : 初始化GC
+        GC_Init --> GC_Scan : 扫描活跃文件
+        GC_Scan --> GC_Copy : 复制存活数据
+        GC_Copy --> GC_Switch : 切换分区
+        GC_Switch --> GC_Complete : GC完成
+        GC_Complete --> [*]
+    }
+    
+    FileSystem_Ready --> FileOpened : fs_open() 成功
+    FileOpened --> FileSystem_Ready : fs_close()
+    
+    FileSystem_Ready --> FileManagement : 文件管理操作
+    FileManagement --> FileSystem_Ready : 操作完成
+    
+    FileSystem_Ready --> GarbageCollection : 空间不足触发
+    FileOpened --> GarbageCollection : 写入时空间不足
+    GarbageCollection --> FileSystem_Ready : GC完成
+    
+    FileSystem_Ready --> [*] : fs_erase()
+    
+    note right of FileSystem_Ready
+        文件系统支持的操作：
+        • POSIX兼容接口
+        • 日志结构化存储
+        • 自动垃圾回收
+        • 数据加密保护
+    end note
+    
+    note right of GarbageCollection
+        GC特点：
+        • Copy-GC算法
+        • 只复制活跃数据
+        • 支持紧急模式
+        • 自动句柄修复
+    end note 

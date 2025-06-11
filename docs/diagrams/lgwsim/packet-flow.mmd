@@ -1,0 +1,129 @@
+graph TD
+    subgraph "数据包发送流程"
+        START_TX["应用调用<br/>lgw_send()或<br/>sx1301ar_send()"]
+        
+        CHECK_CCA["CCA信道评估<br/>cca(txbeg, freq)<br/>检查频率时间冲突"]
+        
+        CCA_OK{"信道可用?"}
+        
+        CALC_TIME["计算发送时间窗<br/>txbeg = now + offset<br/>txend = txbeg + airtime"]
+        
+        SET_TX["设置发送参数<br/>tx_pkt = pkt_data<br/>复制数据包内容"]
+        
+        CHECK_AIO{"AIO连接<br/>正常?"}
+        
+        WRITE_SOCK["调用write_socket()<br/>发送到仿真服务器<br/>非阻塞写入"]
+        
+        TX_SUCCESS["返回成功<br/>LGW_HAL_SUCCESS<br/>或 0"]
+        
+        TX_FAIL_CCA["返回CCA失败<br/>LGW_LBT_ISSUE<br/>或 -1"]
+        
+        TX_FAIL_AIO["返回连接错误<br/>LGW_HAL_ERROR<br/>或 -1"]
+    end
+    
+    subgraph "数据包接收流程"
+        SOCK_READ["套接字可读事件<br/>read_socket()被调用<br/>AIO事件驱动"]
+        
+        CALC_BUF["计算缓冲区位置<br/>rxbuf = rx_pkts[rx_widx]<br/>检查可用空间"]
+        
+        CHECK_OVERFLOW{"缓冲区<br/>溢出?"}
+        
+        HANDLE_OVERFLOW["溢出处理<br/>启动丢弃模式<br/>rx_dsc计数"]
+        
+        READ_DATA["读取套接字数据<br/>read(fd, rxbuf, rxlen)<br/>非阻塞读取"]
+        
+        CHECK_READ{"读取<br/>成功?"}
+        
+        UPDATE_IDX["更新写入索引<br/>rx_widx += n<br/>环形缓冲区"]
+        
+        CHECK_CCA_MSG{"检测CCA消息<br/>freq == MAGIC_CCA_FREQ"}
+        
+        EXTRACT_CCA["提取CCA信息<br/>cca_msg = packet<br/>更新信道状态"]
+        
+        STORE_PACKET["存储普通数据包<br/>等待应用读取<br/>lgw_receive/fetch"]
+        
+        CONN_ERROR["连接错误处理<br/>启动重连机制<br/>try_connecting()"]
+    end
+    
+    subgraph "状态查询流程"
+        QUERY_STATUS["状态查询<br/>lgw_status()或<br/>sx1301ar_tx_status()"]
+        
+        GET_TIME["获取当前时间<br/>t = xticks()<br/>相对时间戳"]
+        
+        CHECK_PHASE{"检查发送阶段"}
+        
+        SCHEDULED["t <= txbeg<br/>TX_SCHEDULED<br/>已调度"]
+        
+        EMITTING["txbeg < t <= txend<br/>TX_EMITTING<br/>正在发送"]
+        
+        FREE["t > txend<br/>TX_FREE<br/>空闲状态"]
+    end
+    
+    subgraph "应用读取流程"
+        APP_READ["应用调用<br/>lgw_receive()或<br/>sx1301ar_fetch()"]
+        
+        CHECK_AVAIL{"检查可用数据包<br/>rbused() >= pkt_size"}
+        
+        COPY_PKT["复制数据包<br/>pkt_data[n] = rx_pkts[]<br/>更新读索引"]
+        
+        UPDATE_READ["更新读取索引<br/>rx_ridx += pkt_size<br/>环形缓冲区"]
+        
+        RETURN_COUNT["返回数据包数量<br/>npkts"]
+        
+        NO_DATA["无数据可读<br/>返回0"]
+    end
+    
+    %% 发送流程连接
+    START_TX --> CALC_TIME
+    CALC_TIME --> CHECK_CCA
+    CHECK_CCA --> CCA_OK
+    CCA_OK -->|是| SET_TX
+    CCA_OK -->|否| TX_FAIL_CCA
+    SET_TX --> CHECK_AIO
+    CHECK_AIO -->|是| WRITE_SOCK
+    CHECK_AIO -->|否| TX_FAIL_AIO
+    WRITE_SOCK --> TX_SUCCESS
+    
+    %% 接收流程连接
+    SOCK_READ --> CALC_BUF
+    CALC_BUF --> CHECK_OVERFLOW
+    CHECK_OVERFLOW -->|是| HANDLE_OVERFLOW
+    CHECK_OVERFLOW -->|否| READ_DATA
+    HANDLE_OVERFLOW --> READ_DATA
+    READ_DATA --> CHECK_READ
+    CHECK_READ -->|成功| UPDATE_IDX
+    CHECK_READ -->|失败| CONN_ERROR
+    UPDATE_IDX --> CHECK_CCA_MSG
+    CHECK_CCA_MSG -->|是| EXTRACT_CCA
+    CHECK_CCA_MSG -->|否| STORE_PACKET
+    EXTRACT_CCA --> SOCK_READ
+    STORE_PACKET --> SOCK_READ
+    
+    %% 状态查询连接
+    QUERY_STATUS --> GET_TIME
+    GET_TIME --> CHECK_PHASE
+    CHECK_PHASE --> SCHEDULED
+    CHECK_PHASE --> EMITTING
+    CHECK_PHASE --> FREE
+    
+    %% 应用读取连接
+    APP_READ --> CHECK_AVAIL
+    CHECK_AVAIL -->|有数据| COPY_PKT
+    CHECK_AVAIL -->|无数据| NO_DATA
+    COPY_PKT --> UPDATE_READ
+    UPDATE_READ --> RETURN_COUNT
+    
+    %% 样式定义
+    classDef sendFlow fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef recvFlow fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef statusFlow fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef readFlow fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef decision fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    
+    class START_TX,CALC_TIME,CHECK_CCA,SET_TX,WRITE_SOCK,TX_SUCCESS sendFlow
+    class SOCK_READ,CALC_BUF,READ_DATA,UPDATE_IDX,STORE_PACKET recvFlow
+    class QUERY_STATUS,GET_TIME,SCHEDULED,EMITTING,FREE statusFlow
+    class APP_READ,COPY_PKT,UPDATE_READ,RETURN_COUNT readFlow
+    class CCA_OK,CHECK_OVERFLOW,CHECK_READ,CHECK_CCA_MSG,CHECK_PHASE,CHECK_AVAIL,CHECK_AIO decision
+    class TX_FAIL_CCA,TX_FAIL_AIO,CONN_ERROR,HANDLE_OVERFLOW,NO_DATA error 

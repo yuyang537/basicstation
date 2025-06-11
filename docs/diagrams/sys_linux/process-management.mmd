@@ -1,0 +1,63 @@
+graph TD
+    A["系统启动<br/>sys_main"] --> B["PID文件检查<br/>readPid()"]
+    
+    B --> C{"检查旧进程"}
+    C -->|存在旧进程| D["终止旧进程<br/>killOldPid()"]
+    C -->|无旧进程| E["继续启动"]
+    
+    D --> F["获取进程组ID<br/>getpgid(pid)"]
+    F --> G{"是进程组领导者?"}
+    G -->|是| H["终止进程组<br/>kill(-pid, SIGINT/SIGKILL)"]
+    G -->|否| I["终止单个进程<br/>kill(pid, SIGINT/SIGKILL)"]
+    
+    H --> J["等待2ms<br/>rt_usleep(2000)"]
+    I --> J
+    J --> E
+    
+    E --> K{"运行模式选择"}
+    K -->|守护进程模式| L["startupDaemon"]
+    K -->|普通模式| M["startupMaster"]
+    K -->|从进程模式| N["sys_startupSlave"]
+    
+    L --> O["fork()创建工作进程"]
+    O --> P["父进程: waitForWorker"]
+    O --> Q["子进程: startupMaster"]
+    
+    P --> R["定时检查工作进程<br/>waitpid(WNOHANG)"]
+    R --> S{"工作进程状态"}
+    S -->|正常运行| T["继续监控<br/>500ms后再检查"]
+    S -->|进程死亡| U["记录错误日志"]
+    
+    T --> R
+    U --> V["重新启动<br/>startupDaemon"]
+    V --> O
+    
+    Q --> W["写入PID文件<br/>writePid()"]
+    W --> X["注册退出清理<br/>atexit(leds_off)"]
+    X --> Y["启动系统服务"]
+    
+    Y --> Z["进入事件循环<br/>aio_loop()"]
+    
+    AA["PID文件管理"] --> BB["makePidFilename<br/>构造PID文件路径"]
+    AA --> CC["readPid<br/>读取进程ID"]
+    AA --> DD["writePid<br/>写入进程ID"]
+    
+    BB --> EE["~temp/station.pid"]
+    CC --> FF["解析进程ID<br/>rt_readDec"]
+    DD --> GG["格式化PID<br/>xprintf"]
+    
+    HH["进程查找"] --> II["sys_findPids<br/>查找使用设备的进程"]
+    II --> JJ["扫描/proc目录"]
+    JJ --> KK["检查/proc/[pid]/fd/"]
+    KK --> LL["读取符号链接<br/>readlink"]
+    LL --> MM["匹配设备路径"]
+    
+    NN["信号处理"] --> OO["handle_signal<br/>信号处理函数"]
+    OO --> PP["exit(128+signum)<br/>退出进程"]
+    
+    style L fill:#e3f2fd
+    style M fill:#f3e5f5
+    style N fill:#fff3e0
+    style AA fill:#e8f5e8
+    style HH fill:#fff8e1
+    style NN fill:#fce4ec 

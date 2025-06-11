@@ -1,0 +1,84 @@
+graph TD
+    A["程序启动<br/>main() → sys_main()"] --> B["argp_parse()<br/>开始解析命令行参数"]
+    
+    B --> C["parse_opt()<br/>参数解析回调函数"]
+    
+    C --> D{"选项类型判断<br/>switch(key)"}
+    
+    D -->|隐藏选项| E["模拟文件系统选项"]
+    D -->|配置选项| F["基本配置选项"]
+    D -->|模式选项| G["运行模式选项"]
+    D -->|特殊选项| H["特殊操作选项"]
+    D -->|系统选项| I["系统控制选项"]
+    
+    E --> E1["case 259: --fscd<br/>设置模拟文件系统目录<br/>fs_chdir(arg)"]
+    E --> E2["case 258: --fskey<br/>设置128位加密密钥<br/>解析32个十六进制字符"]
+    E --> E3["case 257: --fscmd<br/>运行文件系统shell命令<br/>fs_shell(arg) + exit()"]
+    E --> E4["case 256: --selftests<br/>启用内置自测试<br/>setenv('STATION_SELFTESTS')"]
+    
+    F --> F1["case 'x': --eui-prefix<br/>设置EUI前缀<br/>opts->euiprefix = arg"]
+    F --> F2["case 'l': --log-level<br/>设置日志级别<br/>opts->logLevel = arg"]
+    F --> F3["case 'L': --log-file<br/>设置日志文件<br/>opts->logFile = arg"]
+    F --> F4["case 'h': --home<br/>设置主目录<br/>opts->homeDir = arg"]
+    F --> F5["case 't': --temp<br/>设置临时目录<br/>opts->tempDir = arg"]
+    F --> F6["case 'i': --radio-init<br/>设置无线电初始化脚本<br/>opts->radioInit = arg"]
+    
+    G --> G1["case 'S': -S<br/>从进程模式(内部使用)<br/>opts->slaveMode = 1"]
+    G --> G2["case 'X': --exec<br/>从进程执行模板<br/>sys_slaveExec = arg"]
+    G --> G3["case 'd': --daemon<br/>守护进程模式<br/>opts->daemon = 1"]
+    G --> G4["case 'f': --force<br/>强制模式(杀死旧进程)<br/>opts->force = 1"]
+    G --> G5["case 'N': --no-tc<br/>禁用TC服务<br/>opts->notc = 1"]
+    
+    H --> H1["case 'p': --params<br/>打印参数设置<br/>opts->params = 1"]
+    H --> H2["case 'k': --kill<br/>杀死运行中的进程<br/>opts->kill = 1"]
+    H --> H3["case 'v': --version<br/>打印版本信息并退出<br/>输出版本 + exit(0)"]
+    
+    I --> I1["case ARGP_KEY_END<br/>参数解析结束<br/>return 0"]
+    I --> I2["case ARGP_KEY_ARG<br/>位置参数(不支持)<br/>break → ARGP_ERR_UNKNOWN"]
+    I --> I3["default<br/>未知选项<br/>return ARGP_ERR_UNKNOWN"]
+    
+    E1 --> J["返回0<br/>继续解析"]
+    E2 --> J
+    F1 --> J
+    F2 --> J
+    F3 --> J
+    F4 --> J
+    F5 --> J
+    F6 --> J
+    G1 --> J
+    G2 --> J
+    G3 --> J
+    G4 --> J
+    G5 --> J
+    H1 --> J
+    H2 --> J
+    I1 --> J
+    
+    E3 --> K["直接退出<br/>exit(fs_shell())"]
+    E4 --> J
+    H3 --> L["打印版本后退出<br/>exit(0)"]
+    I2 --> M["返回错误<br/>ARGP_ERR_UNKNOWN"]
+    I3 --> M
+    
+    J --> N{"还有更多参数?"}
+    N -->|是| C
+    N -->|否| O["解析完成<br/>返回sys_main()"]
+    
+    M --> P["argp显示错误信息<br/>程序退出"]
+    
+    O --> Q["配置处理阶段<br/>应用解析的选项"]
+    Q --> R["EUI前缀处理<br/>目录配置<br/>日志配置等"]
+    
+    style A fill:#e1f5fe
+    style C fill:#f3e5f5
+    style D fill:#fff3e0
+    style E fill:#e8f5e8
+    style F fill:#e3f2fd
+    style G fill:#fce4ec
+    style H fill:#fff8e1
+    style I fill:#f1f8e9
+    style K fill:#ffcdd2
+    style L fill:#ffcdd2
+    style P fill:#ffcdd2
+    style O fill:#c8e6c9
+    style Q fill:#c8e6c9 

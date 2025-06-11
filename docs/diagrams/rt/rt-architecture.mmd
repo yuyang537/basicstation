@@ -1,0 +1,122 @@
+graph TB
+    subgraph "BasicStation运行时系统架构"
+        subgraph "时间管理模块"
+            T1["系统时间服务<br/>rt_getTime()"]
+            T2["UTC时间转换<br/>rt_getUTC()<br/>rt_ustime2utc()"]
+            T3["日期时间处理<br/>rt_datetime()"]
+            T4["微秒延时<br/>rt_usleep()"]
+            T5["UTC偏移管理<br/>rt_utcOffset"]
+        end
+        
+        subgraph "定时器系统"
+            TM1["定时器队列<br/>timerQ优先级队列"]
+            TM2["定时器管理<br/>rt_iniTimer()<br/>rt_setTimer()<br/>rt_clrTimer()"]
+            TM3["事件处理<br/>rt_processTimerQ()"]
+            TM4["回调执行<br/>tmrcb_t回调函数"]
+            TM5["CPU让出<br/>rt_yieldTo()"]
+        end
+        
+        subgraph "内存管理模块"
+            M1["安全分配<br/>_rt_malloc()<br/>rt_calloc()"]
+            M2["调试跟踪<br/>_rt_malloc_d()<br/>_rt_free_d()"]
+            M3["字符串处理<br/>rt_strdup()<br/>rt_strdupn()<br/>rt_strdupq()"]
+            M4["缓冲区管理<br/>dbuf_dup()<br/>dbuf_free()"]
+        end
+        
+        subgraph "数据处理工具"
+            D1["字节序转换<br/>rt_rlsbf2/4/8()<br/>rt_rmsbf2()"]
+            D2["CRC计算<br/>rt_crc32()"]
+            D3["十六进制处理<br/>rt_hexDigit()"]
+            D4["数值解析<br/>rt_readDec()"]
+        end
+        
+        subgraph "配置解析器"
+            P1["时间跨度解析<br/>rt_readSpan()"]
+            P2["大小解析<br/>rt_readSize()"]
+            P3["EUI地址解析<br/>rt_readEui()"]
+            P4["ID6格式处理<br/>parseId6Fragment()"]
+        end
+        
+        subgraph "系统特性管理"
+            F1["特性注册<br/>rt_addFeature()"]
+            F2["特性查询<br/>rt_features()"]
+            F3["特性存储<br/>features缓冲区"]
+        end
+        
+        subgraph "系统接口"
+            S1["系统标识<br/>rt_eui()"]
+            S2["初始化<br/>rt_ini()"]
+            S3["错误处理<br/>rt_fatal()"]
+        end
+    end
+    
+    %% 系统抽象层接口
+    subgraph "系统抽象层 (sys.h)"
+        SYS1["sys_time()"]
+        SYS2["sys_usleep()"]
+        SYS3["sys_eui()"]
+        SYS4["sys_utc()"]
+        SYS5["sys_fatal()"]
+        SYS6["malloc()/free()"]
+    end
+    
+    %% 应用层接口
+    subgraph "BasicStation应用模块"
+        APP1["s2e.c - S2E协议"]
+        APP2["timesync.c - 时间同步"]
+        APP3["uj.c - JSON解析"]
+        APP4["其他模块"]
+    end
+    
+    %% 连接关系
+    T1 --> SYS1
+    T2 --> T1
+    T2 --> T5
+    T4 --> SYS2
+    S1 --> SYS3
+    S2 --> SYS4
+    S3 --> SYS5
+    M1 --> SYS6
+    M2 --> M1
+    
+    TM3 --> T1
+    TM2 --> TM1
+    TM3 --> TM4
+    
+    APP1 --> TM2
+    APP1 --> T2
+    APP1 --> M1
+    APP1 --> D1
+    APP1 --> F1
+    
+    APP2 --> TM2
+    APP2 --> T1
+    APP2 --> T2
+    
+    APP3 --> M1
+    APP3 --> D2
+    APP3 --> P1
+    
+    APP4 --> P2
+    APP4 --> P3
+    
+    %% 样式定义
+    classDef timeModule fill:#e3f2fd
+    classDef timerModule fill:#f3e5f5
+    classDef memModule fill:#e8f5e8
+    classDef dataModule fill:#fff3e0
+    classDef parseModule fill:#f1f8e9
+    classDef featureModule fill:#fce4ec
+    classDef sysModule fill:#e0f2f1
+    classDef sysLayer fill:#f5f5f5
+    classDef appLayer fill:#fff8e1
+    
+    class T1,T2,T3,T4,T5 timeModule
+    class TM1,TM2,TM3,TM4,TM5 timerModule
+    class M1,M2,M3,M4 memModule
+    class D1,D2,D3,D4 dataModule
+    class P1,P2,P3,P4 parseModule
+    class F1,F2,F3 featureModule
+    class S1,S2,S3 sysModule
+    class SYS1,SYS2,SYS3,SYS4,SYS5,SYS6 sysLayer
+    class APP1,APP2,APP3,APP4 appLayer 

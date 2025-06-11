@@ -1,0 +1,136 @@
+graph TB
+    subgraph "BasicStation 主进程"
+        APP["应用层<br/>S2E协议栈"]
+        RAL_API["RAL统一接口<br/>ral_tx/ral_txstatus/ral_config"]
+        MASTER["RAL主进程<br/>ral_master.c"]
+        
+        subgraph "主进程管理模块"
+            MGR["进程管理器<br/>restart_slave()"]
+            TSYNC["时间同步协调<br/>req_timesync()"]
+            CONFIG["配置分发器<br/>ral_config()"]
+        end
+        
+        subgraph "从进程状态管理"
+            SLAVE_STATE["从进程状态数组<br/>slaves[n_slaves]"]
+            PIPE_MGR["管道管理器<br/>pipe_read/write"]
+            AIO_MGR["异步IO管理<br/>aio_t rd/wr"]
+        end
+    end
+    
+    subgraph "从进程组 (每个控制一个SX130X芯片)"
+        subgraph "从进程 0 (支持PPS)"
+            SLAVE0["RAL从进程<br/>ral_slave.c"]
+            LGW0["硬件抽象层<br/>libloragw"]
+            HW0["SX130X芯片#0<br/>支持GPS/PPS"]
+        end
+        
+        subgraph "从进程 1..N"
+            SLAVE1["RAL从进程<br/>ral_slave.c"]
+            LGW1["硬件抽象层<br/>libloragw"]
+            HW1["SX130X芯片#1..N"]
+        end
+    end
+    
+    subgraph "进程间通信 (IPC)"
+        subgraph "命令管道 (主->从)"
+            CMD_TX["发送命令<br/>RAL_CMD_TX"]
+            CMD_STATUS["状态查询<br/>RAL_CMD_TXSTATUS"]
+            CMD_CONFIG["配置命令<br/>RAL_CMD_CONFIG"]
+            CMD_SYNC["时间同步<br/>RAL_CMD_TIMESYNC"]
+            CMD_STOP["停止命令<br/>RAL_CMD_STOP"]
+        end
+        
+        subgraph "响应管道 (从->主)"
+            RESP_TX["发送响应<br/>CCA/LBT结果"]
+            RESP_RX["接收数据<br/>RAL_CMD_RX"]
+            RESP_SYNC["时间同步数据<br/>timesync_t"]
+            RESP_STATUS["状态响应<br/>TX状态码"]
+        end
+    end
+    
+    subgraph "硬件资源"
+        subgraph "射频前端"
+            ANT0["天线#0<br/>全向/定向"]
+            ANT1["天线#1..N<br/>天线分集"]
+        end
+        
+        subgraph "时间源"
+            GPS["GPS接收器<br/>PPS信号"]
+            OSC["本地晶振<br/>时间基准"]
+        end
+    end
+    
+    %% 控制流和数据流
+    APP --> RAL_API
+    RAL_API --> MASTER
+    MASTER --> MGR
+    MASTER --> TSYNC
+    MASTER --> CONFIG
+    
+    MASTER --> SLAVE_STATE
+    SLAVE_STATE --> PIPE_MGR
+    PIPE_MGR --> AIO_MGR
+    
+    %% IPC通信流
+    AIO_MGR -.->|下行管道| CMD_TX
+    AIO_MGR -.->|下行管道| CMD_STATUS
+    AIO_MGR -.->|下行管道| CMD_CONFIG
+    AIO_MGR -.->|下行管道| CMD_SYNC
+    AIO_MGR -.->|下行管道| CMD_STOP
+    
+    CMD_TX -.->|管道通信| SLAVE0
+    CMD_STATUS -.->|管道通信| SLAVE0
+    CMD_CONFIG -.->|管道通信| SLAVE0
+    CMD_SYNC -.->|管道通信| SLAVE0
+    CMD_STOP -.->|管道通信| SLAVE0
+    
+    CMD_TX -.->|管道通信| SLAVE1
+    CMD_STATUS -.->|管道通信| SLAVE1
+    CMD_CONFIG -.->|管道通信| SLAVE1
+    CMD_SYNC -.->|管道通信| SLAVE1
+    CMD_STOP -.->|管道通信| SLAVE1
+    
+    SLAVE0 -.->|上行管道| RESP_TX
+    SLAVE0 -.->|上行管道| RESP_RX
+    SLAVE0 -.->|上行管道| RESP_SYNC
+    SLAVE0 -.->|上行管道| RESP_STATUS
+    
+    SLAVE1 -.->|上行管道| RESP_TX
+    SLAVE1 -.->|上行管道| RESP_RX
+    SLAVE1 -.->|上行管道| RESP_SYNC
+    SLAVE1 -.->|上行管道| RESP_STATUS
+    
+    RESP_TX -.->|管道通信| AIO_MGR
+    RESP_RX -.->|管道通信| AIO_MGR
+    RESP_SYNC -.->|管道通信| AIO_MGR
+    RESP_STATUS -.->|管道通信| AIO_MGR
+    
+    %% 硬件访问
+    SLAVE0 --> LGW0
+    LGW0 --> HW0
+    HW0 --> ANT0
+    
+    SLAVE1 --> LGW1
+    LGW1 --> HW1
+    HW1 --> ANT1
+    
+    %% 时间同步
+    GPS --> HW0
+    OSC --> HW0
+    OSC --> HW1
+    
+    %% 进程监控
+    MGR -.->|监控重启| SLAVE0
+    MGR -.->|监控重启| SLAVE1
+    
+    %% 样式定义
+    classDef masterProcess fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef slaveProcess fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef hardware fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef communication fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef management fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    
+    class APP,RAL_API,MASTER,MGR,TSYNC,CONFIG,SLAVE_STATE,PIPE_MGR,AIO_MGR masterProcess
+    class SLAVE0,SLAVE1,LGW0,LGW1 slaveProcess
+    class HW0,HW1,ANT0,ANT1,GPS,OSC hardware
+    class CMD_TX,CMD_STATUS,CMD_CONFIG,CMD_SYNC,CMD_STOP,RESP_TX,RESP_RX,RESP_SYNC,RESP_STATUS communication 

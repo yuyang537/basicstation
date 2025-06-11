@@ -1,0 +1,92 @@
+sequenceDiagram
+    %% RAL LGW时间同步序列图 - MCU与硬件时钟同步流程
+
+    participant App as BasicStation应用
+    participant Timer as 时间同步定时器
+    participant RAL as RAL_LGW模块
+    participant MCU as MCU时钟
+    participant SX130X as SX130X芯片
+    participant GPS as GPS模块
+
+    Note over Timer, SX130X: 定期时间同步流程 (通常每秒执行)
+
+    %% 同步周期开始
+    Timer->>RAL: synctime() 定时器触发
+    RAL->>RAL: ral_getTimesync() 开始测量
+
+    %% PPS处理 (如果启用)
+    alt PPS启用且可用
+        RAL->>SX130X: 读取PPS锁存计数器
+        SX130X-->>RAL: 返回pps_xticks
+        Note over RAL: 验证PPS有效性<br/>(非零且发生变化)
+        
+        opt SX1301 (非SX1302)
+            RAL->>SX130X: 临时禁用PPS锁存 (LGW_GPS_EN=0)
+            Note over RAL: 准备读取自由运行计数器
+        end
+    end
+
+    %% 时间测量开始
+    RAL->>MCU: rt_getTime() - 测量开始时间
+    MCU-->>RAL: t0 (开始时间戳)
+
+    %% 读取硬件计数器
+    alt SX1302芯片
+        RAL->>SX130X: timestamp_counter_get() 同时获取计数器和PPS
+        SX130X-->>RAL: xticks + pps_xticks
+    else SX1301芯片
+        RAL->>SX130X: lgw_get_trigcnt() 获取当前计数器
+        SX130X-->>RAL: xticks (当前硬件时间)
+    end
+
+    %% 时间测量结束
+    RAL->>MCU: rt_getTime() - 测量结束时间
+    MCU-->>RAL: t1 (结束时间戳)
+
+    %% 重新启用PPS (如果之前禁用)
+    opt SX1301且PPS启用
+        RAL->>SX130X: 重新启用PPS锁存 (LGW_GPS_EN=1)
+    end
+
+    %% 时间同步计算
+    RAL->>RAL: 计算硬件时间差 d = xticks - last_xtime
+    
+    alt 检测到时间回卷 (d < 0)
+        RAL->>RAL: 修正32位溢出: d += 2^32
+        Note over RAL: 记录CRITICAL错误日志
+    end
+
+    RAL->>RAL: 更新连续64位时间: xtime = last_xtime + d
+    RAL->>RAL: 计算MCU时间中点: ustime = (t0+t1)/2
+    
+    %% PPS时间计算 (如果有效)
+    opt PPS有效且发生变化
+        RAL->>RAL: 计算PPS对应xtime<br/>pps_xtime = xtime + (pps_xticks - xticks)
+        RAL->>RAL: 更新last_pps_xticks
+    end
+
+    %% 返回测量结果
+    RAL-->>Timer: 返回测量质量 (t1-t0)
+    RAL->>RAL: 构建timesync结构体<br/>(xtime, ustime, pps_xtime)
+
+    %% 更新时间同步状态
+    Timer->>App: ts_updateTimesync() 更新同步状态
+    App-->>Timer: 返回下次同步延迟
+
+    %% 设置下次定时器
+    Timer->>Timer: rt_setTimer() 设置下次同步时间
+    
+    Note over Timer: 等待下次同步周期
+
+    %% 错误处理分支
+    opt 硬件访问失败
+        SX130X-->>RAL: 返回错误
+        RAL->>RAL: 记录CRITICAL错误
+        RAL-->>Timer: 返回INT_MAX (最差质量)
+    end
+
+    %% 质量评估说明
+    Note over RAL, MCU: 测量质量 = (t1-t0)<br/>值越小表示测量越准确<br/>上层会根据质量过滤坏测量
+
+    %% 时间精度说明  
+    Note over SX130X, GPS: 硬件时间精度:<br/>- SX130X内部: 1MHz (1μs)<br/>- PPS锁存: GPS秒脉冲精度<br/>- 连续64位时间: 处理32位溢出 

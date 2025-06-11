@@ -1,0 +1,129 @@
+graph TB
+    subgraph "BasicStation文件系统模拟架构"
+        direction TB
+        
+        subgraph "POSIX接口层"
+            direction LR
+            FS_API["文件操作API<br/>• fs_open/close<br/>• fs_read/write<br/>• fs_lseek<br/>• fs_stat/access<br/>• fs_unlink/rename<br/>• fs_chdir"]
+            FS_UTIL["工具接口<br/>• fs_fnNormalize<br/>• fs_sync<br/>• fs_shell"]
+            FS_MGMT["管理接口<br/>• fs_ini/erase<br/>• fs_gc<br/>• fs_ck<br/>• fs_info/dump"]
+        end
+        
+        subgraph "文件系统核心层"
+            direction TB
+            
+            subgraph "记录管理系统"
+                RECORD_MGR["记录管理器<br/>• 记录创建/查找<br/>• 标签处理<br/>• CRC校验"]
+                
+                subgraph "记录类型"
+                    FILE_REC["FILE记录<br/>文件创建"]
+                    DATA_REC["DATA记录<br/>数据存储"]
+                    RENAME_REC["RENAME记录<br/>文件重命名"]
+                    DELETE_REC["DELETE记录<br/>文件删除"]
+                end
+            end
+            
+            subgraph "文件句柄管理"
+                FH_MGR["句柄管理器<br/>• 句柄分配/释放<br/>• 读写状态跟踪<br/>• 位置管理"]
+                FH_TABLE["句柄表<br/>fhTable[FS_MAX_FD]<br/>• inode映射<br/>• 读写偏移<br/>• Flash地址"]
+            end
+            
+            subgraph "查找与索引系统"
+                FIND_SYS["文件查找系统<br/>• CRC哈希查找<br/>• 逆向扫描<br/>• 重命名跟踪"]
+                NAME_SYS["文件名系统<br/>• 路径规范化<br/>• 工作目录<br/>• 名称验证"]
+            end
+        end
+        
+        subgraph "存储管理层"
+            direction TB
+            
+            subgraph "垃圾回收系统"
+                GC_CORE["GC核心引擎<br/>• Copy-GC算法<br/>• 活跃数据识别<br/>• 分区切换"]
+                GC_CACHE["inode缓存<br/>• 16个缓存槽<br/>• 溢出处理<br/>• 批量处理"]
+                GC_POLICY["GC策略<br/>• 空间检查<br/>• 紧急模式<br/>• 自动触发"]
+            end
+            
+            subgraph "双分区管理"
+                SECTION_A["A分区<br/>FLASH_BEG_A<br/>• 魔数+序列号<br/>• 日志记录区"]
+                SECTION_B["B分区<br/>FLASH_BEG_B<br/>• 魔数+序列号<br/>• 日志记录区"]
+                SECTION_MGR["分区管理器<br/>• 活跃分区选择<br/>• 写指针管理<br/>• 空间检查"]
+            end
+        end
+        
+        subgraph "Flash抽象层"
+            direction TB
+            
+            subgraph "加密保护系统"
+                ENCRYPT["数据加密<br/>• 位置相关XOR<br/>• 4密钥轮换<br/>• 透明加解密"]
+                KEY_MGR["密钥管理<br/>flashKey[4]<br/>• 初始化设置<br/>• 地址映射"]
+            end
+            
+            subgraph "Flash访问接口"
+                FLASH_RW["读写接口<br/>• rdFlash1/N<br/>• wrFlash1/N<br/>• 边界检查"]
+                FLASH_WP["写指针系统<br/>flashWP<br/>• 顺序写入<br/>• 自动递增"]
+            end
+        end
+        
+        subgraph "硬件抽象层"
+            direction LR
+            SYS_FLASH["系统Flash接口<br/>• sys_readFlash<br/>• sys_writeFlash<br/>• sys_eraseFlash<br/>• sys_iniFlash"]
+            SYS_PTR["指针访问<br/>sys_ptrFlash<br/>• 直接内存映射"]
+        end
+        
+        subgraph "辅助系统"
+            direction LR
+            AUX_BUF["辅助缓冲区<br/>auxbuf<br/>• 临时存储<br/>• 格式转换"]
+            CRC_SYS["CRC校验系统<br/>• 数据完整性<br/>• 文件名哈希<br/>• kwcrc算法"]
+            FCTX_CACHE["文件上下文缓存<br/>fctxCache<br/>• 标签缓存<br/>• 地址跟踪"]
+        end
+    end
+    
+    %% 连接关系
+    FS_API --> RECORD_MGR
+    FS_API --> FH_MGR
+    FS_MGMT --> GC_CORE
+    
+    RECORD_MGR --> FILE_REC
+    RECORD_MGR --> DATA_REC
+    RECORD_MGR --> RENAME_REC
+    RECORD_MGR --> DELETE_REC
+    
+    FH_MGR --> FH_TABLE
+    FIND_SYS --> NAME_SYS
+    
+    GC_CORE --> GC_CACHE
+    GC_CORE --> GC_POLICY
+    GC_CORE --> SECTION_MGR
+    
+    SECTION_MGR --> SECTION_A
+    SECTION_MGR --> SECTION_B
+    
+    ENCRYPT --> KEY_MGR
+    FLASH_RW --> FLASH_WP
+    FLASH_RW --> ENCRYPT
+    
+    RECORD_MGR --> FLASH_RW
+    GC_CORE --> FLASH_RW
+    SECTION_MGR --> FLASH_RW
+    
+    FLASH_RW --> SYS_FLASH
+    FLASH_RW --> SYS_PTR
+    
+    RECORD_MGR --> AUX_BUF
+    RECORD_MGR --> CRC_SYS
+    FIND_SYS --> FCTX_CACHE
+    
+    %% 样式定义
+    classDef apiStyle fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef coreStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef storageStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef flashStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef sysStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef auxStyle fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    
+    class FS_API,FS_UTIL,FS_MGMT apiStyle
+    class RECORD_MGR,FH_MGR,FH_TABLE,FIND_SYS,NAME_SYS,FILE_REC,DATA_REC,RENAME_REC,DELETE_REC coreStyle
+    class GC_CORE,GC_CACHE,GC_POLICY,SECTION_A,SECTION_B,SECTION_MGR storageStyle
+    class ENCRYPT,KEY_MGR,FLASH_RW,FLASH_WP flashStyle
+    class SYS_FLASH,SYS_PTR sysStyle
+    class AUX_BUF,CRC_SYS,FCTX_CACHE auxStyle 

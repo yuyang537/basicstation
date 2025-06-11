@@ -1,0 +1,65 @@
+graph TB
+    subgraph "AIO定时器集成架构"
+        A[rt_processTimerQ] --> B{返回值类型}
+        B -->|USTIME_MAX| C[无定时器]
+        B -->|具体时间| D[有定时器待处理]
+        
+        C --> C1[ptimeout = NULL<br/>无限等待]
+        D --> E{定时器模式}
+        
+        E -->|CFG_timerfd| F[timerfd模式]
+        E -->|传统模式| G[timeout模式]
+    end
+    
+    subgraph "timerfd模式 (Linux)"
+        F --> F1[计算绝对时间<br/>deadline timestamp]
+        F1 --> F2[转换为timespec<br/>秒 + 纳秒]
+        F2 --> F3[timerfd_settime<br/>TFD_TIMER_ABSTIME]
+        F3 --> F4[FD_SET到rdset<br/>监控可读事件]
+        
+        F4 --> F5[select等待]
+        F5 --> F6{timerfd可读?}
+        F6 -->|是| F7[read消费事件]
+        F6 -->|否| F8[处理其他IO]
+        F7 --> F9[rt_processTimerQ<br/>执行到期回调]
+        F9 --> F10[继续事件循环]
+    end
+    
+    subgraph "timeout模式 (传统)"
+        G --> G1[计算相对时间<br/>ahead microseconds]
+        G1 --> G2[转换为timeval<br/>秒 + 微秒]
+        G2 --> G3[设置select超时<br/>ptimeout指向timeout]
+        
+        G3 --> G4[select等待]
+        G4 --> G5{select返回}
+        G5 -->|超时| G6[rt_processTimerQ<br/>执行到期回调]
+        G5 -->|IO事件| G7[处理IO事件]
+        G6 --> G8[继续事件循环]
+        G7 --> G8
+    end
+    
+    subgraph "定时器队列处理"
+        H[rt_processTimerQ] --> H1[遍历定时器链表]
+        H1 --> H2{定时器到期?}
+        H2 -->|是| H3[执行回调函数<br/>tmr->callback()]
+        H2 -->|否| H4[计算下次到期时间]
+        H3 --> H5[从队列移除]
+        H5 --> H1
+        H4 --> H6[返回等待时间]
+    end
+    
+    subgraph "性能对比"
+        I1[timerfd优势] --> I11[内核级精度<br/>纳秒级定时器]
+        I1 --> I12[统一事件模型<br/>fd统一处理]
+        I1 --> I13[减少系统调用<br/>事件驱动]
+        
+        I2[timeout优势] --> I21[跨平台兼容<br/>POSIX标准]
+        I2 --> I22[简单实现<br/>无额外fd]
+        I2 --> I23[低资源消耗<br/>无内核对象]
+    end
+    
+    style F fill:#e8f5e8
+    style G fill:#fff3e0
+    style H fill:#f3e5f5
+    style I1 fill:#e1f5fe
+    style I2 fill:#fce4ec 

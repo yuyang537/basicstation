@@ -1,0 +1,79 @@
+graph TD
+    A["空中时间计算入口<br/>_calcAirTime()"] --> B["参数验证<br/>rps, plen, nocrc, preamble"]
+    
+    B --> C{"前导码长度检查<br/>preamble == 0?"}
+    C -->|是| D["设置默认前导码<br/>preamble = 8"]
+    C -->|否| E["使用指定前导码"]
+    D --> E
+    
+    E --> F{"RPS参数检查<br/>rps == RPS_ILLEGAL?"}
+    F -->|是| G["返回0<br/>无效参数"]
+    F -->|否| H["提取无线电参数<br/>bw = rps_bw(rps)<br/>sf = rps_sf(rps)"]
+    
+    H --> I{"调制方式判断<br/>sf == FSK?"}
+    
+    % FSK分支
+    I -->|是| J["FSK调制计算"]
+    J --> K["计算总字节数<br/>plen + 前导码5 + 同步字3 + 长度1 + CRC2"]
+    K --> L["转换为位数<br/>总字节数 × 8"]
+    L --> M["计算传输时间<br/>总位数 × 1秒 ÷ 50kbps"]
+    M --> N["返回FSK空中时间"]
+    
+    % LoRa分支
+    I -->|否| O["LoRa调制计算"]
+    O --> P["映射扩频因子<br/>sf = 7 + (sf-SF7)×(SF8-SF7)"]
+    P --> Q["计算基础参数<br/>sfx = 4×sf<br/>q = sfx - (sf≥11 && bw==0 ? 8 : 0)"]
+    
+    Q --> R["设置固定参数<br/>ih = 0 (显式头部)<br/>cr = 0 (编码率4/5)"]
+    R --> S["计算有效载荷位数<br/>tmp = 8×plen - sfx + 28 + (nocrc?0:16) - (ih?20:0)"]
+    
+    S --> T{"有效载荷位数检查<br/>tmp > 0?"}
+    T -->|是| U["计算符号数<br/>tmp = (tmp + q - 1) ÷ q<br/>tmp = tmp × (cr + 5)<br/>tmp = tmp + 8"]
+    T -->|否| V["最小符号数<br/>tmp = 8"]
+    
+    U --> W["加上前导码符号<br/>tmp = (tmp << 2) + 17 + (4 × preamble)"]
+    V --> W
+    
+    W --> X["计算移位参数<br/>sfx = sf - (3+2) - bw<br/>div = 15625"]
+    X --> Y{"防溢出检查<br/>sfx > 4?"}
+    Y -->|是| Z["调整参数防溢出<br/>div >>= (sfx-4)<br/>sfx = 4"]
+    Y -->|否| AA["使用原参数"]
+    Z --> AA
+    
+    AA --> BB["最终时间计算<br/>((tmp << sfx) × 1秒 + div/2) ÷ div"]
+    BB --> CC["返回LoRa空中时间"]
+    
+    % 包装函数
+    DD["s2e_calcDnAirTime()<br/>下行空中时间"] --> EE["调用_calcAirTime()<br/>nocrc = !addcrc"]
+    EE --> A
+    
+    FF["s2e_calcUpAirTime()<br/>上行空中时间"] --> GG["调用_calcAirTime()<br/>nocrc = 0, preamble = 8"]
+    GG --> A
+    
+    % 参数说明
+    HH["输入参数说明"] --> II["rps: 无线电参数集<br/>- 包含扩频因子和带宽<br/>- SF7-SF12 或 FSK<br/>- 125/250/500kHz"]
+    HH --> JJ["plen: 数据包长度(字节)<br/>nocrc: CRC标志(1=无CRC)<br/>preamble: 前导码长度(符号数)"]
+    
+    % 算法特点
+    KK["算法特点"] --> LL["符合LoRa物理层规范<br/>支持FSK和LoRa调制<br/>防止整数溢出<br/>微秒级精度"]
+    KK --> MM["优化技术<br/>- 减少除数避免精度损失<br/>- 移位操作提高性能<br/>- 舍入处理提高准确性"]
+    
+    % 应用场景
+    NN["应用场景"] --> OO["占空比控制<br/>- 计算发送后阻塞时间<br/>- EU868频段限制"]
+    NN --> PP["发送调度<br/>- 估算传输完成时间<br/>- 避免信道冲突"]
+    NN --> QQ["功率管理<br/>- 计算能耗<br/>- 优化电池寿命"]
+    
+    % 样式设置
+    style A fill:#e1f5fe
+    style N fill:#e1f5fe
+    style CC fill:#e1f5fe
+    
+    style J fill:#f3e5f5
+    style O fill:#f3e5f5
+    
+    style BB fill:#e8f5e8
+    style M fill:#e8f5e8
+    
+    style HH fill:#fce4ec
+    style KK fill:#fce4ec
+    style NN fill:#fce4ec 

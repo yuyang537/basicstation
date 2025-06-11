@@ -1,0 +1,155 @@
+graph TB
+    subgraph "主进程 (Master Process)"
+        MASTER["ral_master.c<br/>主控制器"]
+        MASTER_API["RAL API 实现<br/>• ral_tx()<br/>• ral_txstatus()<br/>• ral_txabort()<br/>• ral_config()"]
+        SLAVE_MGR["从进程管理器<br/>• 启动/重启从进程<br/>• 监控进程状态<br/>• 处理进程崩溃"]
+        PIPE_WRITE["管道写入器<br/>write_slave_pipe()"]
+        PIPE_READ["管道读取器<br/>read_slave_pipe()"]
+    end
+
+    subgraph "从进程1 (Slave Process 1)"
+        SLAVE1["ral_slave.c<br/>无线电控制器#1"]
+        RADIO1["libloragw<br/>SX1301/SX1302驱动#1"]
+        HW1["物理硬件#1<br/>SX1301/SX1302芯片"]
+        PIPE1_IN["命令接收管道<br/>stdin"]
+        PIPE1_OUT["数据发送管道<br/>stdout"]
+    end
+
+    subgraph "从进程2 (Slave Process 2)"
+        SLAVE2["ral_slave.c<br/>无线电控制器#2"]
+        RADIO2["libloragw<br/>SX1301/SX1302驱动#2"]
+        HW2["物理硬件#2<br/>SX1301/SX1302芯片"]
+        PIPE2_IN["命令接收管道<br/>stdin"]
+        PIPE2_OUT["数据发送管道<br/>stdout"]
+    end
+
+    subgraph "从进程N (Slave Process N)"
+        SLAVEN["ral_slave.c<br/>无线电控制器#N"]
+        RADION["libloragw<br/>SX1301/SX1302驱动#N"]
+        HWN["物理硬件#N<br/>SX1301/SX1302芯片"]
+        PIPEN_IN["命令接收管道<br/>stdin"]
+        PIPEN_OUT["数据发送管道<br/>stdout"]
+    end
+
+    subgraph "通信协议消息类型"
+        subgraph "主进程 -> 从进程 命令"
+            CMD_CONFIG["RAL_CMD_CONFIG<br/>配置无线电硬件<br/>包含JSON配置数据"]
+            CMD_TX["RAL_CMD_TX<br/>发送数据包<br/>包含发送参数和数据"]
+            CMD_TX_NOCCA["RAL_CMD_TX_NOCCA<br/>无CCA发送<br/>跳过信道清除评估"]
+            CMD_TXSTATUS["RAL_CMD_TXSTATUS<br/>查询发送状态"]
+            CMD_TXABORT["RAL_CMD_TXABORT<br/>中止发送任务"]
+            CMD_TIMESYNC["RAL_CMD_TIMESYNC<br/>时间同步请求"]
+            CMD_STOP["RAL_CMD_STOP<br/>停止从进程"]
+        end
+
+        subgraph "从进程 -> 主进程 响应"
+            RESP_STATUS["状态响应<br/>成功/失败状态码"]
+            RESP_RX["RAL_CMD_RX<br/>接收数据包<br/>包含接收数据和元信息"]
+            RESP_TIMESYNC["时间同步响应<br/>包含测量质量和时间戳"]
+        end
+    end
+
+    subgraph "进程管理机制"
+        PROC_START["进程启动<br/>fork() + execSlave()"]
+        PROC_MONITOR["进程监控<br/>定期检查进程状态"]
+        PROC_RESTART["进程重启<br/>检测到崩溃后重启"]
+        PROC_KILL["进程终止<br/>killAllSlaves()"]
+    end
+
+    subgraph "数据流处理"
+        subgraph "发送流程"
+            TX_REQ["1. 主进程接收发送请求"]
+            TX_SELECT["2. 选择目标从进程<br/>txunit2slave()"]
+            TX_SEND["3. 发送TX命令到从进程"]
+            TX_EXEC["4. 从进程执行发送"]
+            TX_RESP["5. 从进程返回状态"]
+        end
+
+        subgraph "接收流程"
+            RX_POLL["1. 从进程轮询接收<br/>定期检查硬件"]
+            RX_DETECT["2. 检测到数据包"]
+            RX_PROCESS["3. 处理接收数据"]
+            RX_FORWARD["4. 转发给主进程"]
+            RX_QUEUE["5. 主进程加入接收队列"]
+        end
+
+        subgraph "时间同步流程"
+            SYNC_REQ["1. 主进程请求时间同步"]
+            SYNC_MEASURE["2. 从进程执行测量"]
+            SYNC_CALC["3. 计算质量和时间差"]
+            SYNC_RETURN["4. 返回同步数据"]
+            SYNC_UPDATE["5. 主进程更新时间状态"]
+        end
+    end
+
+    %% 主进程内部连接
+    MASTER --> MASTER_API
+    MASTER --> SLAVE_MGR
+    MASTER_API --> PIPE_WRITE
+    SLAVE_MGR --> PIPE_READ
+
+    %% 主进程到从进程通信
+    PIPE_WRITE -->|命令消息| PIPE1_IN
+    PIPE_WRITE -->|命令消息| PIPE2_IN
+    PIPE_WRITE -->|命令消息| PIPEN_IN
+
+    %% 从进程到主进程通信
+    PIPE1_OUT -->|响应消息| PIPE_READ
+    PIPE2_OUT -->|响应消息| PIPE_READ
+    PIPEN_OUT -->|响应消息| PIPE_READ
+
+    %% 从进程内部连接
+    PIPE1_IN --> SLAVE1
+    SLAVE1 --> RADIO1
+    RADIO1 --> HW1
+    SLAVE1 --> PIPE1_OUT
+
+    PIPE2_IN --> SLAVE2
+    SLAVE2 --> RADIO2
+    RADIO2 --> HW2
+    SLAVE2 --> PIPE2_OUT
+
+    PIPEN_IN --> SLAVEN
+    SLAVEN --> RADION
+    RADION --> HWN
+    SLAVEN --> PIPEN_OUT
+
+    %% 进程管理连接
+    SLAVE_MGR --> PROC_START
+    SLAVE_MGR --> PROC_MONITOR
+    SLAVE_MGR --> PROC_RESTART
+    SLAVE_MGR --> PROC_KILL
+
+    %% 数据流连接
+    MASTER_API -.-> TX_REQ
+    TX_REQ --> TX_SELECT
+    TX_SELECT --> TX_SEND
+    TX_SEND --> TX_EXEC
+    TX_EXEC --> TX_RESP
+
+    SLAVE1 -.-> RX_POLL
+    RX_POLL --> RX_DETECT
+    RX_DETECT --> RX_PROCESS
+    RX_PROCESS --> RX_FORWARD
+    RX_FORWARD --> RX_QUEUE
+
+    MASTER -.-> SYNC_REQ
+    SYNC_REQ --> SYNC_MEASURE
+    SYNC_MEASURE --> SYNC_CALC
+    SYNC_CALC --> SYNC_RETURN
+    SYNC_RETURN --> SYNC_UPDATE
+
+    %% 样式定义
+    classDef master fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef slave fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef hardware fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef protocol fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef process fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef dataflow fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+
+    class MASTER,MASTER_API,SLAVE_MGR,PIPE_WRITE,PIPE_READ master
+    class SLAVE1,SLAVE2,SLAVEN,PIPE1_IN,PIPE1_OUT,PIPE2_IN,PIPE2_OUT,PIPEN_IN,PIPEN_OUT slave
+    class RADIO1,RADIO2,RADION,HW1,HW2,HWN hardware
+    class CMD_CONFIG,CMD_TX,CMD_TX_NOCCA,CMD_TXSTATUS,CMD_TXABORT,CMD_TIMESYNC,CMD_STOP,RESP_STATUS,RESP_RX,RESP_TIMESYNC protocol
+    class PROC_START,PROC_MONITOR,PROC_RESTART,PROC_KILL process
+    class TX_REQ,TX_SELECT,TX_SEND,TX_EXEC,TX_RESP,RX_POLL,RX_DETECT,RX_PROCESS,RX_FORWARD,RX_QUEUE,SYNC_REQ,SYNC_MEASURE,SYNC_CALC,SYNC_RETURN,SYNC_UPDATE dataflow 

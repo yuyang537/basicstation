@@ -1,0 +1,100 @@
+graph TD
+    A["🌐 LNS发送JSON消息"] --> B["📡 s2e_onMsg()"]
+    B --> C["🔍 uj_iniDecoder()<br/>初始化JSON解码器"]
+    C --> D["📋 uj_msgtype()<br/>提取消息类型"]
+    D --> E["✅ uj_decode()<br/>解码JSON消息"]
+    E --> F{{"🔧 区域配置检查<br/>s2ctx->region == 0?"}}
+    
+    F -->|"是且为下行消息"| G["⚠️ 丢弃早期消息<br/>LOG(WARNING)"]
+    F -->|"否或非下行消息"| H["📨 消息类型分发"]
+    G --> I["🔚 返回成功"]
+    
+    H --> J1["🔧 J_router_config<br/>handle_router_config()"]
+    H --> J2["📤 J_dnframe<br/>handle_dnframe()"]
+    H --> J3["📬 J_dnmsg<br/>handle_dnmsg()"]
+    H --> J4["⏰ J_dnsched<br/>handle_dnsched()"]
+    H --> J5["🕐 J_timesync<br/>handle_timesync()"]
+    H --> J6["⏱️ J_getxtime<br/>handle_getxtime()"]
+    H --> J7["💻 J_runcmd<br/>handle_runcmd()"]
+    H --> J8["🖥️ J_rmtsh<br/>s2e_handleRmtsh()"]
+    H --> J9["❌ J_error<br/>错误消息处理"]
+    H --> J10["🔌 平台特定<br/>s2e_handleCommands()"]
+    
+    J1 --> K1["🛠️ 配置系统参数<br/>• 区域设置<br/>• 信道配置<br/>• 频率规划"]
+    J1 --> K1A["✅ sys_inState(CONNECTED)"]
+    
+    J2 --> K2["📊 下行帧处理(已过时)<br/>• 解析dnframe格式<br/>• 转换为新格式<br/>• 警告过时使用"]
+    
+    J3 --> K3["📮 下行消息处理<br/>• Class A/B/C设备<br/>• 消息验证<br/>• 发送队列添加"]
+    
+    J4 --> K4["📅 精确时间调度<br/>• 批量发送任务<br/>• GPS时间同步<br/>• 队列管理"]
+    
+    J5 --> K5["⏲️ 时间同步处理<br/>• LNS时间基准<br/>• 本地时间对齐<br/>• 扩展时间计算"]
+    
+    J6 --> K6["🕰️ 时间查询响应<br/>• 当前系统时间<br/>• 扩展时间数组<br/>• UTC时间转换"]
+    
+    J7 --> K7["⚡ 远程命令执行<br/>• 参数验证<br/>• 系统命令调用<br/>• 安全检查"]
+    
+    J8 --> K8["💾 远程Shell处理<br/>• 二进制数据流<br/>• 命令行接口<br/>• 实时交互"]
+    
+    J9 --> K9["🚨 错误消息记录<br/>• LNS错误通知<br/>• 警告日志<br/>• 状态追踪"]
+    
+    J10 --> K10["🔧 平台命令处理<br/>• 硬件特定功能<br/>• 驱动程序接口<br/>• 系统集成"]
+    
+    K3 --> L1["📋 txq_reserveJob()<br/>预留发送任务"]
+    L1 --> L2["⚙️ 解析消息参数<br/>• diid, priority<br/>• DR, Freq<br/>• 时间设置"]
+    L2 --> L3["🎯 s2e_addTxjob()<br/>添加到发送队列"]
+    
+    K4 --> M1["📊 解析调度数组<br/>schedule[]"]
+    M1 --> M2["🔄 批量处理任务<br/>for each slot"]
+    M2 --> M3["⏰ 时间转换<br/>GPS/xtime→txtime"]
+    M3 --> M4["📤 队列提交<br/>txq_commitJob()"]
+    
+    K5 --> N1["📡 提取时间参数<br/>xtime, txtime, gpstime"]
+    N1 --> N2["🔧 ts_setTimesyncLns()<br/>设置时间基准"]
+    N2 --> N3["⚡ ts_processTimesyncLns()<br/>处理时间同步"]
+    
+    K6 --> O1["📤 构建响应消息<br/>getxtime response"]
+    O1 --> O2["🕐 收集时间信息<br/>ustime, UTCtime, xtimes"]
+    O2 --> O3["📡 发送响应<br/>sendText()"]
+    
+    K7 --> P1["📝 解析命令参数<br/>command + arguments"]
+    P1 --> P2["✅ 参数验证<br/>命令存在性检查"]
+    P2 --> P3["⚡ sys_execCommand()<br/>异步执行命令"]
+    
+    subgraph "🔧 配置处理详情"
+        K1 --> Q1["🌍 区域参数设置<br/>EU868/US915/AS923"]
+        Q1 --> Q2["📻 信道计划配置<br/>上行/下行频率"]
+        Q2 --> Q3["⚡ 功率限制设置<br/>EIRP/TXPower"]
+        Q3 --> Q4["📊 占空比参数<br/>DC限制配置"]
+    end
+    
+    subgraph "📤 发送任务处理"
+        L3 --> R1["🎯 优先级计算<br/>calcPriority()"]
+        R1 --> R2["⏰ 时间验证<br/>earliest time check"]
+        R2 --> R3["🚦 占空比检查<br/>EU868/PerChannel"]
+        R3 --> R4["🔄 队列插入<br/>按时间排序"]
+    end
+    
+    subgraph "⚠️ 错误处理"
+        E --> E1{{"❌ 解析失败?"}}
+        E1 -->|"是"| E2["📝 LOG(ERROR)<br/>解析失败消息"]
+        E2 --> I
+        E1 -->|"否"| F
+        
+        J1 --> J1E{{"❌ 配置失败?"}}
+        J1E -->|"是"| J1F["🚨 配置错误<br/>返回失败"]
+        J1E -->|"否"| K1A
+    end
+    
+    classDef msgHandler fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef processing fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef validation fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef success fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    
+    class J1,J2,J3,J4,J5,J6,J7,J8,J9,J10 msgHandler
+    class K1,K2,K3,K4,K5,K6,K7,K8,K9,K10 processing
+    class F,L2,M3,N1,P2 validation
+    class G,E2,J1F error
+    class I,K1A,O3,P3 success 

@@ -1,0 +1,177 @@
+stateDiagram-v2
+    %% Web服务器生命周期状态图
+    
+    [*] --> SystemStart : 系统启动
+    
+    state SystemStart {
+        [*] --> CheckWebPort
+        CheckWebPort : 检查sys_webPort配置
+        CheckWebPort --> WebDisabled : sys_webPort = 0
+        CheckWebPort --> InitializeWeb : sys_webPort > 0
+        WebDisabled --> [*] : Web服务未启用
+    }
+    
+    InitializeWeb --> WebCreation : sys_iniWeb()调用
+    
+    state WebCreation {
+        [*] --> AllocateMemory
+        AllocateMemory : rt_malloc(web_t)分配Web实例
+        AllocateMemory --> MemoryError : 内存分配失败
+        AllocateMemory --> InitHTTPD : 内存分配成功
+        
+        InitHTTPD : httpd_ini(&web->hd, CUPS_BUFSZ)
+        InitHTTPD --> InitTimer : 初始化HTTP服务器
+        
+        InitTimer : rt_iniTimer(&web->timeout, web_timeout)
+        InitTimer --> SetInitState : 初始化定时器
+        
+        SetInitState : web->wstate = WEB_INI
+        SetInitState --> WebInitialized : 设置初始状态
+        
+        MemoryError --> InitError : LOG错误信息
+        InitError --> [*] : 返回NULL
+        WebInitialized --> [*] : 返回web实例
+    }
+    
+    WebCreation --> StartListening : web_start(WEB)调用
+    WebCreation --> InitError : 初始化失败
+    
+    state StartListening {
+        [*] --> ValidateState
+        ValidateState : assert(web->wstate == WEB_INI)
+        ValidateState --> PreparePort : 验证初始状态
+        
+        PreparePort : snprintf(port, "%d", sys_webPort)
+        PreparePort --> AttemptListen : 准备端口字符串
+        
+        AttemptListen : httpd_listen(&web->hd, port)
+        AttemptListen --> ListenSuccess : 监听成功
+        AttemptListen --> ListenFailed : 监听失败
+        
+        ListenSuccess --> SetCallback : 设置事件回调
+        SetCallback : web->hd.c.evcb = (evcb_t)web_onev
+        SetCallback --> LogStartup : 记录启动日志
+        LogStartup --> WebRunning : Web服务器运行中
+        
+        ListenFailed --> LogError : 记录错误日志
+        LogError --> WebError : web_done(web, WEB_ERR_FAILED)
+    }
+    
+    StartListening --> Running : 启动成功
+    StartListening --> Error : 启动失败
+    
+    state Running {
+        [*] --> WaitingForEvents
+        
+        WaitingForEvents : 等待网络事件
+        WaitingForEvents --> ProcessRequest : HTTPDEV_REQUEST
+        WaitingForEvents --> HandleDead : HTTPDEV_DEAD
+        WaitingForEvents --> HandleClosed : HTTPDEV_CLOSED
+        WaitingForEvents --> HandleTimeout : 超时事件
+        WaitingForEvents --> HandleUnknown : 未知事件
+        
+        state ProcessRequest {
+            [*] --> ParseHTTP
+            ParseHTTP : httpd_parseReqLine()解析请求
+            ParseHTTP --> RouteRequest : 解析成功
+            ParseHTTP --> BadRequest : 解析失败(400)
+            
+            RouteRequest : web_route()路由分发
+            RouteRequest --> ServeStatic : 静态文件
+            RouteRequest --> CallHandler : 动态处理器
+            RouteRequest --> NotFound : 404未找到
+            
+            ServeStatic --> CheckGzip : 检查gzip压缩
+            CheckGzip --> SendResponse : 生成响应
+            
+            CallHandler --> ExecuteAPI : API处理器
+            CallHandler --> ExecuteVersion : 版本处理器
+            CallHandler --> ExecuteSystem : 系统处理器
+            CallHandler --> ExecuteAuth : 认证处理器
+            
+            ExecuteAPI --> SendResponse : 返回200
+            ExecuteVersion --> GenerateJSON : 生成JSON响应
+            ExecuteSystem --> SendResponse : 系统处理结果
+            ExecuteAuth --> SendResponse : 认证处理结果
+            
+            GenerateJSON --> SendResponse : 设置JSON内容类型
+            BadRequest --> SendResponse : 400错误响应
+            NotFound --> SendResponse : 404错误响应
+            
+            SendResponse --> CleanupRequest : httpd_response()
+            CleanupRequest --> [*] : 请求处理完成
+        }
+        
+        HandleDead --> LogDead : 记录连接死亡
+        LogDead --> CloseConnection : httpd_close()
+        CloseConnection --> WaitingForEvents : 继续等待事件
+        
+        HandleClosed --> LogClosed : 记录连接关闭
+        LogClosed --> ResetCallback : 重置事件回调
+        ResetCallback --> WaitingForEvents : 继续等待事件
+        
+        HandleTimeout --> LogTimeout : 记录超时错误
+        LogTimeout --> StopWeb : web_done(web, WEB_ERR_TIMEOUT)
+        
+        HandleUnknown --> LogUnknown : 记录未知事件错误
+        LogUnknown --> WaitingForEvents : 继续等待事件
+        
+        StopWeb --> Stopping : 开始停止流程
+    }
+    
+    Running --> Stopping : sys_stopWeb()调用
+    Error --> Stopping : 错误处理
+    
+    state Stopping {
+        [*] --> CheckInstance
+        CheckInstance : 检查WEB实例是否存在
+        CheckInstance --> CleanupWeb : WEB != NULL
+        CheckInstance --> AlreadyStopped : WEB == NULL
+        
+        CleanupWeb --> StopHTTPD : httpd_stop(&web->hd)
+        StopHTTPD --> FreeHTTPD : httpd_free(&web->hd)
+        FreeHTTPD --> ClearTimer : rt_clrTimer(&web->timeout)
+        ClearTimer --> SetClosedState : web->wstate = WEB_ERR_CLOSED
+        SetClosedState --> FreeMemory : rt_free(web)
+        FreeMemory --> ClearGlobal : WEB = NULL
+        ClearGlobal --> WebStopped : Web服务已停止
+        
+        AlreadyStopped --> WebStopped : 已经停止
+        WebStopped --> [*] : 停止完成
+    }
+    
+    Stopping --> [*] : Web服务器完全停止
+    
+    %% 错误状态处理
+    state Error {
+        [*] --> ErrorState
+        ErrorState : WEB_ERR_FAILED状态
+        ErrorState --> [*]
+    }
+    
+    Error --> [*] : 错误处理完成
+    InitError --> [*] : 初始化错误
+    
+    note right of Running
+        Web服务器主要运行状态
+        - 处理HTTP请求
+        - 提供静态文件服务
+        - 执行API处理器
+        - 管理连接生命周期
+    end note
+    
+    note right of ProcessRequest
+        请求处理子状态
+        - HTTP解析和验证
+        - 路由匹配和分发
+        - 静态/动态内容处理
+        - 响应生成和发送
+    end note
+    
+    note right of Stopping
+        优雅停止流程
+        - 停止接受新连接
+        - 关闭现有连接
+        - 清理所有资源
+        - 重置全局状态
+    end note 

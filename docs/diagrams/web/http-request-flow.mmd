@@ -1,0 +1,179 @@
+flowchart TD
+    %% HTTP请求处理流程图
+    
+    START([客户端发送HTTP请求])
+    
+    %% 连接和事件处理
+    CONN_RECV[TCP连接接收数据]
+    EVENT_TRIGGER[触发HTTPDEV_REQUEST事件]
+    EVENT_HANDLER[web_onev事件处理函数]
+    
+    %% 请求解析阶段
+    GET_HEADER[httpd_getHdr<br/>获取HTTP请求头]
+    LOG_REQUEST[记录请求详细信息<br/>content-length, 请求内容]
+    INIT_STATE[初始化解析状态<br/>httpd_pstate_t pstate]
+    INIT_BUFFERS[初始化缓冲区<br/>respbuf, fbuf]
+    
+    %% HTTP请求行解析
+    PARSE_REQ[httpd_parseReqLine<br/>解析HTTP请求行]
+    PARSE_OK{解析成功?}
+    PARSE_ERROR[设置400错误<br/>请求格式错误]
+    
+    %% 路由处理阶段
+    CALL_ROUTER[调用web_route路由器]
+    LOG_PATH[记录请求路径和CRC]
+    CHECK_EMPTY{路径为空?}
+    SET_INDEX[设置默认路径<br/>index.html]
+    
+    %% 静态文件处理
+    TRY_STATIC[sys_webFile<br/>尝试读取静态文件]
+    FILE_EXISTS{文件存在?}
+    CHECK_GZIP[检查gzip压缩<br/>magic number: 1f 8b 08]
+    IS_GZIP{是gzip格式?}
+    SET_GZIP[设置Content-Encoding: gzip]
+    RETURN_200[返回HTTP 200状态]
+    
+    %% 动态处理器匹配
+    SETUP_HANDLERS[设置处理器数组<br/>SYS_HANDLERS, HANDLERS, AUTH_HANDLERS]
+    HANDLER_LOOP{遍历处理器组}
+    INNER_LOOP{遍历组内处理器}
+    CRC_MATCH{pathcrc匹配?}
+    CALL_HANDLER[调用匹配的处理器函数]
+    NO_MATCH[返回404错误<br/>未找到处理器]
+    
+    %% 处理器执行示例
+    subgraph "处理器示例"
+        API_HANDLER[handle_api<br/>API根路径处理]
+        VERSION_HANDLER[handle_version<br/>版本信息处理]
+        VERSION_CHECK{检查HTTP方法}
+        VERSION_METHOD_ERROR[返回405错误<br/>方法不允许]
+        VERSION_ALLOC[分配200字节缓冲区]
+        VERSION_JSON[生成JSON版本信息<br/>msgtype, firmware, station, protocol, features]
+        VERSION_SET_TYPE[设置Content-Type: application/json]
+    end
+    
+    %% 响应生成阶段
+    COPY_PATH[复制路径字符串<br/>用于日志记录]
+    RESPONSE_SWITCH{根据状态码生成响应}
+    
+    %% 200响应处理
+    RESP_200[生成200 OK响应头<br/>Content-Type, Content-Encoding]
+    CHECK_BUFFER{缓冲区空间足够?}
+    BUFFER_FULL[生成507错误<br/>存储空间不足]
+    COPY_CONTENT[复制内容到响应缓冲区]
+    LOG_SUCCESS[记录成功发送日志]
+    
+    %% 错误响应处理
+    RESP_400[生成400 Bad Request]
+    RESP_401[生成401 Unauthorized]
+    RESP_404[生成404 Not Found]
+    RESP_405[生成405 Method Not Allowed]
+    RESP_500[生成500 Internal Server Error]
+    RESP_507[生成507 Insufficient Storage]
+    
+    %% 最终处理
+    FREE_PATH[释放路径字符串内存]
+    SEND_RESPONSE[httpd_response<br/>发送HTTP响应]
+    CLEANUP[清理资源]
+    
+    END([响应发送完成])
+    
+    %% 主流程连接
+    START --> CONN_RECV
+    CONN_RECV --> EVENT_TRIGGER
+    EVENT_TRIGGER --> EVENT_HANDLER
+    
+    EVENT_HANDLER --> GET_HEADER
+    GET_HEADER --> LOG_REQUEST
+    LOG_REQUEST --> INIT_STATE
+    INIT_STATE --> INIT_BUFFERS
+    INIT_BUFFERS --> PARSE_REQ
+    
+    PARSE_REQ --> PARSE_OK
+    PARSE_OK -->|是| CALL_ROUTER
+    PARSE_OK -->|否| PARSE_ERROR
+    
+    CALL_ROUTER --> LOG_PATH
+    LOG_PATH --> CHECK_EMPTY
+    CHECK_EMPTY -->|是| SET_INDEX
+    CHECK_EMPTY -->|否| TRY_STATIC
+    SET_INDEX --> TRY_STATIC
+    
+    TRY_STATIC --> FILE_EXISTS
+    FILE_EXISTS -->|是| CHECK_GZIP
+    FILE_EXISTS -->|否| SETUP_HANDLERS
+    
+    CHECK_GZIP --> IS_GZIP
+    IS_GZIP -->|是| SET_GZIP
+    IS_GZIP -->|否| RETURN_200
+    SET_GZIP --> RETURN_200
+    
+    SETUP_HANDLERS --> HANDLER_LOOP
+    HANDLER_LOOP -->|继续| INNER_LOOP
+    HANDLER_LOOP -->|结束| NO_MATCH
+    
+    INNER_LOOP --> CRC_MATCH
+    CRC_MATCH -->|匹配| CALL_HANDLER
+    CRC_MATCH -->|不匹配| INNER_LOOP
+    
+    %% 处理器示例流程
+    CALL_HANDLER --> API_HANDLER
+    CALL_HANDLER --> VERSION_HANDLER
+    
+    VERSION_HANDLER --> VERSION_CHECK
+    VERSION_CHECK -->|GET| VERSION_ALLOC
+    VERSION_CHECK -->|其他| VERSION_METHOD_ERROR
+    
+    VERSION_ALLOC --> VERSION_JSON
+    VERSION_JSON --> VERSION_SET_TYPE
+    VERSION_SET_TYPE --> RETURN_200
+    
+    API_HANDLER --> RETURN_200
+    
+    %% 响应生成流程
+    RETURN_200 --> COPY_PATH
+    PARSE_ERROR --> COPY_PATH
+    NO_MATCH --> COPY_PATH
+    VERSION_METHOD_ERROR --> COPY_PATH
+    
+    COPY_PATH --> RESPONSE_SWITCH
+    
+    RESPONSE_SWITCH -->|200| RESP_200
+    RESPONSE_SWITCH -->|400| RESP_400
+    RESPONSE_SWITCH -->|401| RESP_401
+    RESPONSE_SWITCH -->|404| RESP_404
+    RESPONSE_SWITCH -->|405| RESP_405
+    RESPONSE_SWITCH -->|500| RESP_500
+    
+    RESP_200 --> CHECK_BUFFER
+    CHECK_BUFFER -->|足够| COPY_CONTENT
+    CHECK_BUFFER -->|不足| BUFFER_FULL
+    
+    COPY_CONTENT --> LOG_SUCCESS
+    LOG_SUCCESS --> FREE_PATH
+    BUFFER_FULL --> FREE_PATH
+    
+    RESP_400 --> FREE_PATH
+    RESP_401 --> FREE_PATH
+    RESP_404 --> FREE_PATH
+    RESP_405 --> FREE_PATH
+    RESP_500 --> FREE_PATH
+    
+    FREE_PATH --> SEND_RESPONSE
+    SEND_RESPONSE --> CLEANUP
+    CLEANUP --> END
+    
+    %% 样式定义
+    classDef startEndClass fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+    classDef processClass fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef decisionClass fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef errorClass fill:#ffebee,stroke:#d32f2f,stroke-width:2px
+    classDef handlerClass fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef responseClass fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    
+    class START,END startEndClass
+    class CONN_RECV,EVENT_TRIGGER,EVENT_HANDLER,GET_HEADER,LOG_REQUEST,INIT_STATE,INIT_BUFFERS,CALL_ROUTER,LOG_PATH,TRY_STATIC,CHECK_GZIP,SETUP_HANDLERS,COPY_PATH,COPY_CONTENT,LOG_SUCCESS,FREE_PATH,SEND_RESPONSE,CLEANUP processClass
+    class PARSE_OK,FILE_EXISTS,CHECK_EMPTY,IS_GZIP,HANDLER_LOOP,INNER_LOOP,CRC_MATCH,VERSION_CHECK,CHECK_BUFFER,RESPONSE_SWITCH decisionClass
+    class PARSE_ERROR,NO_MATCH,VERSION_METHOD_ERROR,BUFFER_FULL errorClass
+    class API_HANDLER,VERSION_HANDLER,VERSION_ALLOC,VERSION_JSON,VERSION_SET_TYPE,CALL_HANDLER handlerClass
+    class RESP_200,RESP_400,RESP_401,RESP_404,RESP_405,RESP_500,RESP_507,RETURN_200,SET_INDEX,SET_GZIP responseClass 

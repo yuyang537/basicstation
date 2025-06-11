@@ -1,0 +1,125 @@
+flowchart TD
+    START([垃圾回收触发]) --> TRIGGER_CHECK{"触发条件检查"}
+    
+    %% 触发条件
+    TRIGGER_CHECK -->|"空间不足"| SPACE_TRIGGER["空间触发：<br/>• flashWP + reqbytes > flashFsMax<br/>• 剩余空间 < 阈值"]
+    TRIGGER_CHECK -->|"inode耗尽"| INODE_TRIGGER["inode触发：<br/>• nextIno >= MAX_INO-2<br/>• inode编号即将溢出"]
+    TRIGGER_CHECK -->|"手动触发"| MANUAL_TRIGGER["手动触发：<br/>• fs_gc()显式调用<br/>• 系统维护操作"]
+    
+    %% 初始化阶段
+    SPACE_TRIGGER --> INIT_GC[GC初始化阶段]
+    INODE_TRIGGER --> INIT_GC
+    MANUAL_TRIGGER --> INIT_GC
+    
+    INIT_GC --> INVALIDATE_FH["步骤1：无效化文件句柄<br/>• 遍历fhTable[FS_MAX_FD]<br/>• 标记所有打开文件为无效<br/>• ino |= MAX_INO+1"]
+    
+    INVALIDATE_FH --> SETUP_TARGET["步骤2：设置目标分区<br/>• 切换fsSection (A↔B)<br/>• 递增GC序列号<br/>• 重置nextIno = 1"]
+    
+    %% 扫描阶段
+    SETUP_TARGET --> SCAN_INIT["步骤3：扫描初始化<br/>• faddrCont = flashFsBeg()<br/>• faddrEnd = flashWP<br/>• 准备16槽inode缓存"]
+    
+    SCAN_INIT --> BATCH_LOOP["批处理循环开始"]
+    
+    BATCH_LOOP --> INIT_CACHE["初始化缓存：<br/>• inocache[16] = {0}<br/>• ucache = 0<br/>• overflow = 0"]
+    
+    INIT_CACHE --> SCAN_RECORDS["扫描记录阶段"]
+    
+    %% 记录扫描
+    SCAN_RECORDS --> READ_RECORD["读取记录：<br/>• begtag = rdFlash1(faddr)<br/>• cmd = FSTAG_cmd(begtag)<br/>• fncrc = rdFlash1(faddr+4)"]
+    
+    READ_RECORD --> CHECK_CMD{"记录类型检查"}
+    
+    CHECK_CMD -->|"DATA记录"| SKIP_DATA["跳过数据记录<br/>continue"]
+    CHECK_CMD -->|"FILE/RENAME/DELETE"| FIND_CACHE["查找缓存匹配<br/>for(ui=0; ui<ucache; ui++)"]
+    
+    SKIP_DATA --> NEXT_RECORD["移动到下一记录<br/>faddr += 8 + FSTAG_len(begtag)"]
+    
+    FIND_CACHE --> CACHE_MATCH{"缓存匹配？<br/>fncrc == inocache[ui].fncrc"}
+    
+    %% 缓存匹配处理
+    CACHE_MATCH -->|"匹配"| UPDATE_CACHE{"更新缓存"}
+    UPDATE_CACHE -->|"FILE记录"| UPDATE_FILE["更新文件记录：<br/>• faddrFile = faddr<br/>• faddrRename = 0<br/>• 覆盖前定义"]
+    UPDATE_CACHE -->|"DELETE记录"| REMOVE_CACHE["移除缓存项：<br/>• ucache -= 1<br/>• 压缩缓存数组<br/>• 检查是否可停止"]
+    UPDATE_CACHE -->|"RENAME记录"| UPDATE_RENAME["更新重命名：<br/>• faddrRename = faddr<br/>• fncrc = 新文件名CRC"]
+    
+    %% 新文件处理
+    CACHE_MATCH -->|"不匹配且是新FILE"| CHECK_OVERFLOW{"缓存是否已满？<br/>ucache < 16"}
+    CHECK_OVERFLOW -->|"未满"| ADD_CACHE["添加到缓存：<br/>• inocache[ucache].faddrFile = faddr<br/>• inocache[ucache].fncrc = fncrc<br/>• ucache++"]
+    CHECK_OVERFLOW -->|"已满"| SET_OVERFLOW["设置溢出标志：<br/>• overflow = 1<br/>• faddrCont = faddr<br/>• 标记重扫点"]
+    
+    %% 循环控制
+    UPDATE_FILE --> NEXT_RECORD
+    REMOVE_CACHE --> CHECK_EMPTY{"缓存是否为空？<br/>ucache == 0 && overflow"}
+    UPDATE_RENAME --> NEXT_RECORD
+    ADD_CACHE --> NEXT_RECORD
+    SET_OVERFLOW --> NEXT_RECORD
+    
+    CHECK_EMPTY -->|"空且溢出"| COPY_PHASE["进入复制阶段"]
+    CHECK_EMPTY -->|"非空"| NEXT_RECORD
+    
+    NEXT_RECORD --> SCAN_END_CHECK{"扫描结束？<br/>faddr >= faddrEnd"}
+    SCAN_END_CHECK -->|"未结束"| SCAN_RECORDS
+    SCAN_END_CHECK -->|"结束"| COPY_PHASE
+    
+    %% 复制阶段
+    COPY_PHASE --> COPY_FILES["复制存活文件<br/>for(ui=0; ui<ucache; ui++)"]
+    
+    COPY_FILES --> PROCESS_FILE["处理文件：<br/>ui = 当前文件索引"]
+    
+    PROCESS_FILE --> READ_FILE_INFO["读取文件信息：<br/>• a = faddrRename ? faddrRename : faddrFile<br/>• begtag = rdFlash1(a)<br/>• len = FSTAG_len(begtag)"]
+    
+    READ_FILE_INFO --> CHECK_RENAME{"是否被重命名？<br/>faddrRename != 0"}
+    
+    CHECK_RENAME -->|"是"| HANDLE_RENAME["处理重命名：<br/>• 从RENAME记录提取新文件名<br/>• 更新fncrc和ctim<br/>• 移动文件名到正确位置"]
+    CHECK_RENAME -->|"否"| COPY_FILE_RECORD["直接复制FILE记录"]
+    
+    HANDLE_RENAME --> COPY_FILE_RECORD
+    
+    COPY_FILE_RECORD --> EMERGENCY_CHECK{"紧急模式？<br/>emergency == 1"}
+    EMERGENCY_CHECK -->|"是"| CHECK_LOG_FILE["检查日志文件：<br/>strstr(fn, \".log\")"]
+    CHECK_LOG_FILE -->|"是日志"| SKIP_LOG["跳过日志文件<br/>continue"]
+    CHECK_LOG_FILE -->|"非日志"| WRITE_FILE_RECORD
+    EMERGENCY_CHECK -->|"否"| WRITE_FILE_RECORD
+    
+    WRITE_FILE_RECORD ["写入新FILE记录：<br/>• 分配新inode (nextIno+ui)<br/>• 更新begtag<br/>• wrFlashNwp()"]
+    
+    WRITE_FILE_RECORD --> FIXUP_HANDLES["修复文件句柄：<br/>• 查找匹配的旧inode<br/>• 更新为新inode<br/>• 恢复有效状态"]
+    
+    FIXUP_HANDLES --> COPY_DATA_RECORDS["复制数据记录：<br/>扫描所有DATA记录"]
+    
+    COPY_DATA_RECORDS --> DATA_COPY_LOOP["数据复制循环：<br/>• 分块读取(AUXBUF_SZ4)<br/>• 更新inode编号<br/>• 写入目标分区"]
+    
+    DATA_COPY_LOOP --> NEXT_FILE_CHECK{"更多文件？<br/>ui < ucache-1"}
+    NEXT_FILE_CHECK -->|"是"| PROCESS_FILE
+    NEXT_FILE_CHECK -->|"否"| UPDATE_NEXT_INO["更新inode计数器<br/>nextIno += ucache"]
+    
+    SKIP_LOG --> NEXT_FILE_CHECK
+    
+    %% 批处理控制
+    UPDATE_NEXT_INO --> BATCH_END_CHECK{"批处理结束？<br/>faddrCont >= faddrEnd"}
+    BATCH_END_CHECK -->|"未结束"| BATCH_LOOP
+    BATCH_END_CHECK -->|"结束"| FINALIZE_GC
+    
+    %% 完成阶段
+    FINALIZE_GC --> ERASE_OLD["擦除旧分区：<br/>• sys_eraseFlash()<br/>• 清理FS_PAGE_CNT/2页<br/>• 释放存储空间"]
+    
+    ERASE_OLD --> SWITCH_SECTION["切换活跃分区：<br/>• fsSection ^= 1<br/>• 更新全局状态"]
+    
+    SWITCH_SECTION --> RESTORE_HANDLES["恢复文件句柄：<br/>• 检查存活的文件句柄<br/>• fs_lseek()重新定位<br/>• 无效化失效句柄"]
+    
+    RESTORE_HANDLES --> GC_COMPLETE([垃圾回收完成])
+    
+    %% 样式定义
+    classDef triggerStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef initStyle fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef scanStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef copyStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef decisionStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef completeStyle fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    
+    class START,TRIGGER_CHECK,SPACE_TRIGGER,INODE_TRIGGER,MANUAL_TRIGGER triggerStyle
+    class INIT_GC,INVALIDATE_FH,SETUP_TARGET initStyle
+    class SCAN_INIT,BATCH_LOOP,INIT_CACHE,SCAN_RECORDS,READ_RECORD,FIND_CACHE scanStyle
+    class COPY_PHASE,COPY_FILES,PROCESS_FILE,COPY_FILE_RECORD,COPY_DATA_RECORDS copyStyle
+    class CHECK_CMD,CACHE_MATCH,CHECK_OVERFLOW,CHECK_EMPTY,SCAN_END_CHECK,CHECK_RENAME,EMERGENCY_CHECK,BATCH_END_CHECK decisionStyle
+    class FINALIZE_GC,ERASE_OLD,SWITCH_SECTION,RESTORE_HANDLES,GC_COMPLETE completeStyle 

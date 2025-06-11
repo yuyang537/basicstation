@@ -1,0 +1,35 @@
+graph TB
+    subgraph "BasicStation头文件注释完成状态"
+        A["已完全完成 (13/22)"]
+        B["部分完成 (8/22)"]
+        C["待完成 (1/22)"]
+    end
+    
+    A --> A1["argp2.h - 命令行参数解析 ✓"]
+    A --> A2["kwcrc.h - CRC关键字表 ✓"]
+    A --> A3["sys.h - 系统核心服务 ✓"]
+    A --> A4["uj.h - JSON解析器 ✓"]
+    A --> A5["fs.h - 文件系统 ✓"]
+    A --> A6["xq.h - 扩展队列 ✓"]
+    A --> A7["tc.h - TC连接管理 ✓"]
+    A --> A8["http.h - HTTP客户端 ✓"]
+    A --> A9["tls.h - TLS安全层 ✓"]
+    A --> A10["sx1301v2conf.h - SX1301配置 ✓"]
+    A --> A11["ralsub.h - RAL子系统 ✓"]
+    A --> A12["sys_linux.h - Linux平台 ✓"]
+    A --> A13["rt.h - 运行时基础库 ✓"]
+    
+    B --> B1["httpd.h - HTTP服务器 (90%完成)"]
+    B --> B2["ws.h - WebSocket (80%完成)"]
+    B --> B3["web.h - Web平台 (75%完成)"]
+    B --> B4["net.h - 网络基础 (70%完成)"]
+    B --> B5["cups.h - CUPS客户端 (60%完成)"]
+    B --> B6["timesync.h - 时间同步 (60%完成)"]
+    B --> B7["s2e.h - S2E协议 (50%完成)"]
+    B --> B8["sx130xconf.h - SX130x配置 (40%完成)"]
+    
+    C --> C1["s2conf.h - S2配置管理 (需要完善)"]
+    
+    style A fill:#e8f5e8
+    style B fill:#fff3cd
+    style C fill:#f8d7da 

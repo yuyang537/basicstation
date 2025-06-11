@@ -1,0 +1,56 @@
+flowchart TD
+    START[开始证书管理]
+    
+    subgraph "配置阶段"
+        INIT_CONF[初始化TLS配置<br/>tls_makeConf]
+        SETUP_SSL[设置SSL默认配置<br/>mbedtls_ssl_config_defaults]
+        SET_RNG[配置随机数生成器<br/>mbedtls_ssl_conf_rng]
+        SET_AUTH[设置认证模式<br/>VERIFY_REQUIRED]
+    end
+    
+    subgraph "CA证书设置"
+        SET_CA{设置可信CA？}
+        READ_CA_FILE[读取CA证书文件<br/>sys_readFile]
+        PARSE_CA[解析CA证书<br/>mbedtls_x509_crt_parse]
+        SET_CA_CHAIN[设置CA证书链<br/>mbedtls_ssl_conf_ca_chain]
+    end
+    
+    subgraph "客户端证书设置"
+        SET_CLIENT{设置客户端证书？}
+        READ_CERT_FILE[读取客户端证书文件]
+        READ_KEY_FILE[读取私钥文件]
+        PARSE_CERT[解析客户端证书<br/>mbedtls_x509_crt_parse]
+        PARSE_KEY[解析私钥<br/>mbedtls_pk_parse_key]
+        BIND_CERT[绑定证书和私钥<br/>mbedtls_ssl_conf_own_cert]
+    end
+    
+    subgraph "会话创建"
+        CREATE_SESSION[创建TLS会话<br/>tls_makeSession]
+        SETUP_SESSION[设置SSL会话<br/>mbedtls_ssl_setup]
+        CONFIG_SNI[配置服务器名称<br/>mbedtls_ssl_set_hostname]
+        READY[会话准备就绪]
+    end
+    
+    START --> INIT_CONF
+    INIT_CONF --> SETUP_SSL
+    SETUP_SSL --> SET_RNG
+    SET_RNG --> SET_AUTH
+    SET_AUTH --> SET_CA
+    
+    SET_CA -->|是| READ_CA_FILE
+    SET_CA -->|否| SET_CLIENT
+    READ_CA_FILE --> PARSE_CA
+    PARSE_CA --> SET_CA_CHAIN
+    SET_CA_CHAIN --> SET_CLIENT
+    
+    SET_CLIENT -->|是| READ_CERT_FILE
+    SET_CLIENT -->|否| CREATE_SESSION
+    READ_CERT_FILE --> READ_KEY_FILE
+    READ_KEY_FILE --> PARSE_CERT
+    PARSE_CERT --> PARSE_KEY
+    PARSE_KEY --> BIND_CERT
+    BIND_CERT --> CREATE_SESSION
+    
+    CREATE_SESSION --> SETUP_SESSION
+    SETUP_SESSION --> CONFIG_SNI
+    CONFIG_SNI --> READY

@@ -1,0 +1,176 @@
+graph TB
+    %% GPS事件通知系统图
+    %% 展示GPS状态变化的检测、事件生成和通知传递机制
+    
+    %% GPS状态输入
+    subgraph "GPS状态检测"
+        GPS_INPUT["GPS定位数据<br/>NMEA GGA句子"]
+        QUALITY_CHECK["定位质量检查<br/>quality字段"]
+        POSITION_CHECK["位置数据检查<br/>lat/lon有效性"]
+        COORD_EXTRACT["坐标提取<br/>lat, lon, alt, dilution<br/>satellites, quality"]
+    end
+    
+    %% 状态变化检测
+    subgraph "状态变化检测"
+        LAST_STATE["上次状态记录<br/>last_quality<br/>last_reported_fix"]
+        FIX_CHANGE["定位状态变化<br/>(quality==0) ^ (last_quality==0)"]
+        TIME_TRACKER["时间跟踪器<br/>time_fixchange"]
+        POS_TOLERANCE["位置容差检查<br/>check_tolerance<br/>0.001度阈值"]
+    end
+    
+    %% 事件类型决策
+    subgraph "事件类型决策"
+        STATUS_DECISION{"当前状态判断"}
+        FIX_BRANCH["FIX事件分支<br/>获得定位信号"]
+        NOFIX_BRANCH["NOFIX事件分支<br/>丢失定位信号"]
+        MOVE_BRANCH["MOVE事件分支<br/>位置发生变化"]
+    end
+    
+    %% FIX事件处理
+    subgraph "FIX事件处理"
+        FIX_DELAY_CHECK["延迟检查<br/>now > time_fixchange + GPS_REPORT_DELAY"]
+        FIX_STATE_CHECK["状态检查<br/>last_reported_fix <= 0 && fix > 0"]
+        FIX_EVENT_GEN["生成FIX事件<br/>send_gpsev_fix(GPSEV_FIX)"]
+        FIX_STATE_UPDATE["更新状态<br/>last_reported_fix = 1<br/>nofix_backoff = 0"]
+        FIX_ALARM["FIX告警<br/>GPS fix信息"]
+    end
+    
+    %% NOFIX事件处理
+    subgraph "NOFIX事件处理"
+        NOFIX_BACKOFF_CALC["退避计算<br/>thres = time_fixchange + (1<<nofix_backoff)*delay"]
+        NOFIX_TIME_CHECK["时间检查<br/>now > thres"]
+        NOFIX_EVENT_GEN["生成NOFIX事件<br/>send_gpsev_nofix"]
+        NOFIX_STATE_UPDATE["更新退避状态<br/>last_reported_fix = -1<br/>nofix_backoff = min(+1, 16)"]
+        NOFIX_ALARM["NOFIX告警<br/>No GPS fix since时间"]
+    end
+    
+    %% MOVE事件处理  
+    subgraph "MOVE事件处理"
+        MOVE_TOLERANCE["移动检测<br/>check_tolerance(orig_lat, lat, 0.001)<br/>check_tolerance(orig_lon, lon, 0.001)"]
+        MOVE_FILE_UPDATE["更新位置文件<br/>lastpos JSON保存"]
+        MOVE_COORD_UPDATE["更新坐标记录<br/>orig_lat/lon = lat/lon<br/>from_lat/lon记录"]
+        MOVE_FLAG_SET["设置移动标志<br/>report_move = 1"]
+        MOVE_EVENT_GEN["生成MOVE事件<br/>send_gpsev_fix(GPSEV_MOVE)"]
+        MOVE_ALARM["MOVE告警<br/>GPS move from->to信息"]
+    end
+    
+    %% 事件消息构建
+    subgraph "事件消息构建"
+        JSON_BUILDER["JSON消息构建器<br/>uj_encOpen/uj_encKVn"]
+        EVENT_FIELDS["事件字段填充<br/>msgtype: event<br/>evcat: gps<br/>evmsg: {...}"]
+        FIX_FIELDS["FIX字段<br/>evtype, lat, lon, alt<br/>dilution, satellites, quality"]
+        NOFIX_FIELDS["NOFIX字段<br/>evtype: nofix<br/>since: 丢失时长"]
+        MOVE_FIELDS["MOVE字段<br/>evtype: move<br/>from/to坐标信息"]
+    end
+    
+    %% 消息发送系统
+    subgraph "消息发送系统"
+        BUFFER_GET["获取发送缓冲<br/>TC->s2ctx.getSendbuf"]
+        BUFFER_CHECK{"缓冲区可用?"}
+        JSON_ENCODE["JSON编码<br/>uj_encClose"]
+        SEND_EVENT["发送事件消息<br/>TC->s2ctx.sendText"]
+        SEND_ALARM["发送告警消息<br/>send_alarm"]
+        ALARM_FORMAT["告警格式化<br/>vxprintf变参格式"]
+    end
+    
+    %% 外部接口
+    subgraph "外部通信"
+        TC_CONNECTION["TC连接<br/>传输控制层"]
+        LNS_SERVER["LNS服务器<br/>网络服务器"]
+        LOG_SYSTEM["日志系统<br/>MOD_GPS模块日志"]
+        FILE_SYSTEM["文件系统<br/>lastpos位置缓存"]
+    end
+    
+    %% 数据流连接
+    GPS_INPUT --> QUALITY_CHECK
+    QUALITY_CHECK --> POSITION_CHECK
+    POSITION_CHECK --> COORD_EXTRACT
+    
+    COORD_EXTRACT --> LAST_STATE
+    LAST_STATE --> FIX_CHANGE
+    FIX_CHANGE --> TIME_TRACKER
+    COORD_EXTRACT --> POS_TOLERANCE
+    
+    TIME_TRACKER --> STATUS_DECISION
+    POS_TOLERANCE --> STATUS_DECISION
+    
+    STATUS_DECISION -->|fix > 0| FIX_BRANCH
+    STATUS_DECISION -->|fix < 0| NOFIX_BRANCH
+    STATUS_DECISION -->|position changed| MOVE_BRANCH
+    
+    %% FIX事件流程
+    FIX_BRANCH --> FIX_STATE_CHECK
+    FIX_STATE_CHECK --> FIX_DELAY_CHECK
+    FIX_DELAY_CHECK --> FIX_EVENT_GEN
+    FIX_EVENT_GEN --> FIX_STATE_UPDATE
+    FIX_EVENT_GEN --> FIX_ALARM
+    
+    %% NOFIX事件流程
+    NOFIX_BRANCH --> NOFIX_BACKOFF_CALC
+    NOFIX_BACKOFF_CALC --> NOFIX_TIME_CHECK
+    NOFIX_TIME_CHECK --> NOFIX_EVENT_GEN
+    NOFIX_EVENT_GEN --> NOFIX_STATE_UPDATE
+    NOFIX_EVENT_GEN --> NOFIX_ALARM
+    
+    %% MOVE事件流程
+    MOVE_BRANCH --> MOVE_TOLERANCE
+    MOVE_TOLERANCE --> MOVE_FILE_UPDATE
+    MOVE_FILE_UPDATE --> MOVE_COORD_UPDATE
+    MOVE_COORD_UPDATE --> MOVE_FLAG_SET
+    MOVE_FLAG_SET --> MOVE_EVENT_GEN
+    MOVE_EVENT_GEN --> MOVE_ALARM
+    
+    %% 消息构建流程
+    FIX_EVENT_GEN --> JSON_BUILDER
+    NOFIX_EVENT_GEN --> JSON_BUILDER
+    MOVE_EVENT_GEN --> JSON_BUILDER
+    
+    JSON_BUILDER --> EVENT_FIELDS
+    EVENT_FIELDS --> FIX_FIELDS
+    EVENT_FIELDS --> NOFIX_FIELDS
+    EVENT_FIELDS --> MOVE_FIELDS
+    
+    FIX_FIELDS --> BUFFER_GET
+    NOFIX_FIELDS --> BUFFER_GET
+    MOVE_FIELDS --> BUFFER_GET
+    
+    %% 发送流程
+    BUFFER_GET --> BUFFER_CHECK
+    BUFFER_CHECK -->|失败| LOG_SYSTEM
+    BUFFER_CHECK -->|成功| JSON_ENCODE
+    JSON_ENCODE --> SEND_EVENT
+    
+    FIX_ALARM --> ALARM_FORMAT
+    NOFIX_ALARM --> ALARM_FORMAT
+    MOVE_ALARM --> ALARM_FORMAT
+    ALARM_FORMAT --> SEND_ALARM
+    
+    %% 外部通信
+    SEND_EVENT --> TC_CONNECTION
+    SEND_ALARM --> TC_CONNECTION
+    TC_CONNECTION --> LNS_SERVER
+    MOVE_FILE_UPDATE --> FILE_SYSTEM
+    
+    %% 错误日志
+    FIX_EVENT_GEN -.->|记录| LOG_SYSTEM
+    NOFIX_EVENT_GEN -.->|记录| LOG_SYSTEM
+    MOVE_EVENT_GEN -.->|记录| LOG_SYSTEM
+    
+    %% 颜色样式
+    classDef input fill:#e1f5fe
+    classDef detection fill:#e8f5e8
+    classDef decision fill:#fff3e0
+    classDef fixEvent fill:#c8e6c9
+    classDef nofixEvent fill:#ffcdd2
+    classDef moveEvent fill:#f3e5f5
+    classDef message fill:#fce4ec
+    classDef external fill:#f1f8e9
+    
+    class GPS_INPUT,QUALITY_CHECK,POSITION_CHECK,COORD_EXTRACT input
+    class LAST_STATE,FIX_CHANGE,TIME_TRACKER,POS_TOLERANCE detection
+    class STATUS_DECISION,FIX_STATE_CHECK,NOFIX_TIME_CHECK,BUFFER_CHECK decision
+    class FIX_BRANCH,FIX_EVENT_GEN,FIX_STATE_UPDATE,FIX_ALARM fixEvent
+    class NOFIX_BRANCH,NOFIX_EVENT_GEN,NOFIX_STATE_UPDATE,NOFIX_ALARM nofixEvent
+    class MOVE_BRANCH,MOVE_EVENT_GEN,MOVE_COORD_UPDATE,MOVE_ALARM moveEvent
+    class JSON_BUILDER,EVENT_FIELDS,BUFFER_GET,SEND_EVENT message
+    class TC_CONNECTION,LNS_SERVER,LOG_SYSTEM,FILE_SYSTEM external 

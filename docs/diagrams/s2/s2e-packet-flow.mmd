@@ -1,0 +1,126 @@
+sequenceDiagram
+    participant Radio as 无线电层<br/>(RAL)
+    participant RXQ as 接收队列<br/>(RXQ)
+    participant S2E as S2E协议引擎
+    participant TXQ as 发送队列<br/>(TXQ) 
+    participant LNS as 网络服务器<br/>(LNS)
+    participant Timer as 定时器系统
+    participant DC as 占空比控制
+    
+    Note over Radio,DC: S2E协议上行数据包处理流程
+    
+    %% 上行数据包接收处理
+    Radio->>S2E: 接收到LoRa数据包
+    S2E->>RXQ: rxq_nextJob() - 获取空闲接收任务
+    S2E->>S2E: 填充接收任务信息<br/>(频率,DR,SNR,RSSI,时间戳)
+    S2E->>S2E: s2e_addRxjob() - 添加到接收队列
+    
+    %% 镜像帧检测
+    loop 检查已有接收任务
+        S2E->>S2E: 比较DR,长度,内容
+        alt 发现重复帧
+            S2E->>S2E: 信号质量比较<br/>(8*SNR - RSSI)
+            alt 新帧质量更好
+                S2E->>RXQ: rxq_dropJob() - 丢弃旧帧
+                S2E->>RXQ: rxq_commitJob() - 提交新帧
+            else 旧帧质量更好
+                S2E->>S2E: 丢弃新帧
+            end
+            Note over S2E: LOG镜像帧信息
+        else 无重复帧
+            S2E->>RXQ: rxq_commitJob() - 正常提交
+        end
+    end
+    
+    %% 接收队列刷新处理
+    S2E->>S2E: s2e_flushRxjobs() - 处理接收队列
+    loop 处理所有待处理任务
+        S2E->>LNS: getSendbuf() - 获取发送缓冲区
+        alt 缓冲区可用
+            S2E->>S2E: s2e_parse_lora_frame()<br/>解析LoRa帧
+            alt 帧有效且未被过滤
+                S2E->>S2E: 计算参考时间<br/>(muxtime + 时间差)
+                S2E->>S2E: JSON编码上行信息<br/>(RefTime,DR,Freq,upinfo)
+                S2E->>LNS: sendText() - 发送JSON到LNS
+            else 帧无效或被过滤
+                S2E->>S2E: 跳过此帧
+            end
+        else 缓冲区已满
+            Note over S2E: 暂停处理，等待缓冲区
+            break
+        end
+    end
+    
+    Note over Radio,DC: S2E协议下行数据包处理流程
+    
+    %% 下行消息接收
+    LNS->>S2E: s2e_onMsg() - JSON消息
+    S2E->>S2E: JSON解析和消息类型识别
+    alt router_config消息
+        S2E->>S2E: handle_router_config()<br/>更新区域配置
+    else dnframe消息
+        S2E->>S2E: handle_dnframe()<br/>立即下行帧
+    else dnmsg消息
+        S2E->>S2E: handle_dnmsg()<br/>MAC下行消息
+    else dnsched消息
+        S2E->>S2E: handle_dnsched()<br/>调度下行传输
+    else timesync消息
+        S2E->>S2E: handle_timesync()<br/>时间同步
+    end
+    
+    %% 发送任务添加
+    S2E->>S2E: s2e_addTxjob() - 添加发送任务
+    S2E->>S2E: check_dnfreq() - 验证下行频率
+    S2E->>S2E: check_dr() - 验证数据速率
+    S2E->>S2E: updateAirtimeTxpow() - 计算空中时间和功率
+    S2E->>S2E: calcPriority() - 计算任务优先级
+    
+    %% 占空比检查
+    S2E->>DC: canTx() - 检查发送许可
+    alt EU868区域
+        DC->>DC: s2e_canTxEU868() - EU868频段检查
+        DC->>DC: freq2band() - 频率到频段映射
+    end
+    DC->>DC: s2e_canTxPerChnlDC() - 每信道占空比检查
+    
+    alt 可以发送
+        S2E->>TXQ: 插入发送队列(按优先级排序)
+        S2E->>Timer: 设置发送定时器
+    else 需要延迟
+        S2E->>S2E: altTxTime() - 寻找备选发送时间
+        alt 找到备选时间
+            S2E->>TXQ: 调整后插入队列
+        else Class C重试
+            S2E->>S2E: 增加重试计数
+            alt 重试次数未超限
+                S2E->>S2E: 延迟后重新尝试
+            else 重试超限
+                S2E->>S2E: 丢弃任务
+            end
+        end
+    end
+    
+    %% 发送调度和执行
+    Timer->>S2E: s2e_nextTxAction() - 检查发送动作
+    S2E->>TXQ: 获取下一个待发送任务
+    alt 到达发送时间
+        S2E->>Radio: 执行发送
+        S2E->>DC: update_DC() - 更新占空比状态
+        S2E->>LNS: send_dntxed() - 发送确认
+        S2E->>S2E: LOG发送完成信息
+    else 未到发送时间
+        S2E->>Timer: 计算下次检查时间
+    end
+    
+    %% 定时器超时处理
+    Timer->>S2E: s2e_txtimeout() - 发送超时
+    S2E->>S2E: 处理发送超时情况
+    Timer->>S2E: s2e_bcntimeout() - 信标超时  
+    S2E->>S2E: 处理信标发送
+    
+    %% 错误处理和清理
+    alt 发送失败或错误
+        S2E->>S2E: LOG错误信息
+        S2E->>TXQ: 清理失败任务
+        S2E->>Timer: 清除相关定时器
+    end 

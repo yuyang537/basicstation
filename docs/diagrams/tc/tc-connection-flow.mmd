@@ -1,0 +1,90 @@
+graph TD
+    A["🚀 TC模块启动<br/>tc_start()"] --> B["📋 获取TC配置URI<br/>sys_uri(SYS_CRED_TC)"]
+    B --> C{URI是否有效?}
+    C -->|是| D["🔗 解析URI组件<br/>uri_checkHostPortUri()"]
+    C -->|否| E1["❌ 记录错误<br/>TC_ERR_NOURI"]
+    
+    D --> F{需要TLS?}
+    F -->|是| G["🔒 设置TLS连接<br/>conn_setup_tls()"]
+    F -->|否| H["📡 建立INFOS连接<br/>ws_connect(/router-info)"]
+    G --> G1{TLS设置成功?}
+    G1 -->|是| H
+    G1 -->|否| E2["❌ TLS设置失败<br/>TC_ERR_FAILED"]
+    
+    H --> I{连接成功?}
+    I -->|是| J["⏱️ 设置超时定时器<br/>rt_setTimerCb()"]
+    I -->|否| E3["❌ 连接失败<br/>TC_ERR_FAILED"]
+    
+    J --> K["📤 发送路由器查询<br/>tc_info_request()"]
+    K --> L["📨 发送EUI查询请求<br/>{\"router\": \"<EUI>\"}"]
+    
+    L --> M["⏳ 等待INFOS响应<br/>WSEV_TEXTRCVD"]
+    M --> N["🔍 解析JSON响应<br/>uj_decode()"]
+    N --> O{响应是否有效?}
+    
+    O -->|否| E4["❌ 解析失败<br/>TC_ERR_FAILED"]
+    O -->|是| P["📋 提取字段信息<br/>router, muxs, uri, error"]
+    
+    P --> Q{是否有错误?}
+    Q -->|是| E5["❌ 服务器拒绝<br/>TC_ERR_REJECTED"]
+    Q -->|否| R["✅ 验证MUXS URI<br/>uri_isScheme(ws/wss)"]
+    
+    R --> S{URI格式正确?}
+    S -->|否| E6["❌ URI格式错误<br/>TC_ERR_FAILED"]
+    S -->|是| T["💾 编码存储URI<br/>tc->muxsuri[]"]
+    
+    T --> U["🔄 关闭INFOS连接<br/>ws_close()"]
+    U --> V["🌐 建立MUXS连接<br/>tc_connect_muxs()"]
+    
+    V --> W["🔗 解析MUXS URI<br/>hostname, port, path"]
+    W --> X{需要TLS?}
+    X -->|是| Y["🔒 设置MUXS TLS<br/>conn_setup_tls()"]
+    X -->|否| Z["📡 建立MUXS连接<br/>ws_connect()"]
+    Y --> Y1{TLS设置成功?}
+    Y1 -->|是| Z
+    Y1 -->|否| E7["❌ MUXS TLS失败<br/>TC_ERR_FAILED"]
+    
+    Z --> AA{MUXS连接成功?}
+    AA -->|否| E8["❌ MUXS连接失败<br/>TC_ERR_FAILED"]
+    AA -->|是| BB["⏱️ 设置MUXS超时<br/>rt_setTimerCb()"]
+    
+    BB --> CC["📤 发送版本信息<br/>tc_muxs_connection()"]
+    CC --> DD["📨 构建版本JSON<br/>{msgtype: version, ...}"]
+    DD --> EE["✅ 连接建立完成<br/>TC_MUXS_CONNECTED"]
+    
+    EE --> FF["🔄 开始数据传输<br/>S2E协议处理"]
+    
+    %% 错误处理统一流程
+    E1 --> ER["🔧 错误处理<br/>tc_done()"]
+    E2 --> ER
+    E3 --> ER
+    E4 --> ER
+    E5 --> ER
+    E6 --> ER
+    E7 --> ER
+    E8 --> ER
+    
+    ER --> RR{需要重连?}
+    RR -->|是| SS["⏰ 计算退避时间<br/>tc_continue()"]
+    RR -->|否| TT["🛑 停止TC引擎<br/>sys_stopTC()"]
+    
+    SS --> UU{重连类型?}
+    UU -->|INFOS重连| VV["🔄 重新创建TC<br/>tc_ini() + tc_start()"]
+    UU -->|MUXS重连| WW["🔄 直接重连MUXS<br/>tc_connect_muxs()"]
+    UU -->|触发CUPS| XX["⚙️ 触发配置更新<br/>sys_triggerCUPS()"]
+    
+    VV --> A
+    WW --> V
+    
+    %% 样式定义
+    classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef decision fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef success fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    
+    class A,FF startEnd
+    class B,D,G,H,J,K,L,N,P,R,T,U,V,W,Y,Z,BB,CC,DD process
+    class C,F,G1,I,O,Q,S,X,Y1,AA,RR,UU decision
+    class E1,E2,E3,E4,E5,E6,E7,E8,ER,TT error
+    class EE,FF success 

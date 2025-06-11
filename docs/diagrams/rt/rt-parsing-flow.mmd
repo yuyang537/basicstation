@@ -1,0 +1,121 @@
+graph TD
+    A["输入字符串"] --> B{"解析类型?"}
+    
+    %% 数值解析分支
+    B -->|数值| C["rt_readDec()"]
+    C --> D{"前缀检查"}
+    D -->|0x/0X| E["十六进制解析"]
+    D -->|其他| F["十进制解析"]
+    
+    E --> G["逐字符rt_hexDigit()"]
+    G --> H["累积: v=(v<<4)+digit"]
+    F --> I["逐字符检查'0'-'9'"]
+    I --> J["累积: v=v*10+(c-'0')"]
+    
+    H --> K["更新解析位置"]
+    J --> K
+    K --> L["返回数值/-1"]
+    
+    %% 时间跨度解析分支
+    B -->|时间跨度| M["rt_readSpan()"]
+    M --> N["循环解析数值+单位"]
+    N --> O["rt_readDec()获取数值"]
+    O --> P{"单位字符?"}
+    
+    P -->|d| Q["天: 24*3600秒"]
+    P -->|h| R["小时: 3600秒"]
+    P -->|m| S{"下一字符是's'?"}
+    S -->|是| T["毫秒: ms"]
+    S -->|否| U["分钟: 60秒"]
+    P -->|s| V["秒: 1秒"]
+    P -->|无单位| W["使用默认单位"]
+    
+    Q --> X["累积时间跨度"]
+    R --> X
+    T --> X
+    U --> X
+    V --> X
+    W --> X
+    X --> Y{"继续解析?"}
+    Y -->|是| N
+    Y -->|否| Z["返回总时间跨度"]
+    
+    %% 大小解析分支
+    B -->|数据大小| AA["rt_readSize()"]
+    AA --> BB["循环解析数值+单位"]
+    BB --> CC["rt_readDec()获取数值"]
+    CC --> DD{"单位字符?"}
+    
+    DD -->|k/K| EE{"下一字符是'b'?"}
+    EE -->|是| FF["KiB: 1024"]
+    EE -->|否| GG["KB: 1000"]
+    DD -->|m/M| HH{"下一字符是'b'?"}
+    HH -->|是| II["MiB: 1024²"]
+    HH -->|否| JJ["MB: 1000²"]
+    DD -->|g/G| KK{"下一字符是'b'?"}
+    KK -->|是| LL["GiB: 1024³"]
+    KK -->|否| MM["GB: 1000³"]
+    DD -->|无单位| NN["使用默认单位"]
+    
+    FF --> OO["累积大小"]
+    GG --> OO
+    II --> OO
+    JJ --> OO
+    LL --> OO
+    MM --> OO
+    NN --> OO
+    OO --> PP{"继续解析?"}
+    PP -->|是| BB
+    PP -->|否| QQ["返回总大小"]
+    
+    %% EUI地址解析分支
+    B -->|EUI地址| RR["rt_readEui()"]
+    RR --> SS["扫描字符统计"]
+    SS --> TT["统计短横线/冒号/十六进制数字"]
+    TT --> UU{"格式检查"}
+    
+    UU -->|格式错误| VV["返回0"]
+    UU -->|ID6格式<br/>2-3个冒号| WW["parseId6Fragment()"]
+    UU -->|标准格式| XX["逐字符解析"]
+    
+    WW --> YY{"查找双冒号::"}
+    YY -->|::开头| ZZ["::123格式"]
+    YY -->|::结尾| AAA["123::格式"]
+    YY -->|::中间| BBB["1::2格式"]
+    YY -->|无双冒号| CCC["完整格式"]
+    
+    ZZ --> DDD["解析后半部分"]
+    AAA --> EEE["解析前半部分<br/>左移到高位"]
+    BBB --> FFF["解析前后两部分<br/>合并结果"]
+    CCC --> GGG["解析完整地址"]
+    
+    DDD --> HHH["返回EUI值"]
+    EEE --> HHH
+    FFF --> HHH
+    GGG --> HHH
+    
+    XX --> III["累积十六进制数字"]
+    III --> JJJ["eui=(eui<<4)|digit"]
+    JJJ --> HHH
+    
+    %% 十六进制数字转换
+    KKK["rt_hexDigit()"] --> LLL{"字符范围?"}
+    LLL -->|'0'-'9'| MMM["返回c-'0'"]
+    LLL -->|'a'-'f'| NNN["返回c-('a'-10)"]
+    LLL -->|'A'-'F'| OOO["返回c-('A'-10)"]
+    LLL -->|其他| PPP["返回-1"]
+    
+    %% 样式定义
+    classDef input fill:#e3f2fd
+    classDef decision fill:#fff3e0
+    classDef process fill:#e8f5e8
+    classDef result fill:#f3e5f5
+    classDef error fill:#ffebee
+    classDef helper fill:#f1f8e9
+    
+    class A input
+    class B,D,P,S,Y,DD,EE,HH,KK,PP,UU,YY,LLL decision
+    class C,E,F,G,H,I,J,M,N,O,AA,BB,CC,RR,SS,TT,WW,XX,III,JJJ,KKK process
+    class L,Z,QQ,HHH,MMM,NNN,OOO result
+    class VV,PPP error
+    class Q,R,T,U,V,W,FF,GG,II,JJ,LL,MM,NN,ZZ,AAA,BBB,CCC,DDD,EEE,FFF,GGG helper 

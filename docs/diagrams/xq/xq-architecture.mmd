@@ -1,0 +1,76 @@
+graph TB
+    subgraph "BasicStation扩展队列系统架构"
+        direction TB
+        
+        subgraph "TXQ发送队列系统"
+            direction TB
+            TXQ_CORE["TXQ核心管理器<br/>• 作业池管理<br/>• 数据缓冲区管理<br/>• 空闲链表维护"]
+            
+            subgraph "TXQ组件"
+                TXQ_JOBS["作业管理<br/>txjob_t数组<br/>• 发送参数<br/>• 链表索引<br/>• 数据偏移"]
+                TXQ_DATA["数据缓冲区<br/>txdata数组<br/>• 连续存储<br/>• 动态分配<br/>• 即时压缩"]
+                TXQ_FREE["空闲链表<br/>freeJobs<br/>• 单链表<br/>• LIFO管理<br/>• 快速分配"]
+                TXQ_COMPACT["内存紧凑化<br/>• 空洞填补<br/>• 偏移调整<br/>• 零拷贝移动"]
+            end
+            
+            TXQ_CORE --> TXQ_JOBS
+            TXQ_CORE --> TXQ_DATA
+            TXQ_CORE --> TXQ_FREE
+            TXQ_CORE --> TXQ_COMPACT
+        end
+        
+        subgraph "RXQ接收队列系统"
+            direction TB
+            RXQ_CORE["RXQ核心管理器<br/>• FIFO队列管理<br/>• 智能空间分配<br/>• 自动压缩机制"]
+            
+            subgraph "RXQ组件"
+                RXQ_JOBS["作业队列<br/>rxjob_t数组<br/>• 接收参数<br/>• 数据位置<br/>• FIFO索引"]
+                RXQ_DATA["数据缓冲区<br/>rxdata数组<br/>• 帧数据存储<br/>• 连续布局<br/>• 滑动窗口"]
+                RXQ_PTRS["队列指针<br/>first/next<br/>• 队列边界<br/>• 循环利用<br/>• 空间优化"]
+                RXQ_COMPACT["智能压缩<br/>• 空间回收<br/>• 数据迁移<br/>• 偏移重计算"]
+            end
+            
+            RXQ_CORE --> RXQ_JOBS
+            RXQ_CORE --> RXQ_DATA
+            RXQ_CORE --> RXQ_PTRS
+            RXQ_CORE --> RXQ_COMPACT
+        end
+        
+        subgraph "外部接口层"
+            direction LR
+            TX_API["发送API<br/>• txq_reserveJob<br/>• txq_reserveData<br/>• txq_commitJob<br/>• txq_freeJob"]
+            RX_API["接收API<br/>• rxq_nextJob<br/>• rxq_commitJob<br/>• rxq_dropJob"]
+            UTIL_API["工具API<br/>• txq_idx2job<br/>• txq_job2idx<br/>• txq_nextJob<br/>• txq_unqJob"]
+        end
+        
+        subgraph "应用层接口"
+            direction LR
+            RADIO["无线电层<br/>• 帧接收<br/>• 发送调度"]
+            S2E["S2E网关<br/>• JSON序列化<br/>• WebSocket转发"]
+            SCHEDULER["任务调度器<br/>• 优先级管理<br/>• 时间调度"]
+        end
+    end
+    
+    %% 连接关系
+    RADIO -->|"接收帧数据"| RX_API
+    RX_API --> RXQ_CORE
+    
+    SCHEDULER -->|"创建发送作业"| TX_API
+    TX_API --> TXQ_CORE
+    
+    S2E -->|"消费接收数据"| RX_API
+    S2E -->|"获取发送作业"| TX_API
+    
+    TX_API --> UTIL_API
+    RX_API --> UTIL_API
+    
+    %% 样式定义
+    classDef txqStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef rxqStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef apiStyle fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef appStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    
+    class TXQ_CORE,TXQ_JOBS,TXQ_DATA,TXQ_FREE,TXQ_COMPACT txqStyle
+    class RXQ_CORE,RXQ_JOBS,RXQ_DATA,RXQ_PTRS,RXQ_COMPACT rxqStyle
+    class TX_API,RX_API,UTIL_API apiStyle
+    class RADIO,S2E,SCHEDULER appStyle 

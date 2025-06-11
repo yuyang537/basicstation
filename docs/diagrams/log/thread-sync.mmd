@@ -1,0 +1,109 @@
+graph TB
+    %% BasicStation日志系统多线程同步机制图
+    
+    subgraph "主线程"
+        MAIN_THREAD[主线程执行]
+        LOG_CALL[LOG调用]
+        ADD_LOG[addLog函数]
+        MUTEX_LOCK[pthread_mutex_lock]
+        BUFFER_OP[缓冲区操作]
+        MUTEX_UNLOCK[pthread_mutex_unlock]
+        CONDITION_CHECK{是否需要立即通知?}
+        COND_SIGNAL[pthread_cond_signal]
+        TIMER_SET[设置延迟定时器]
+    end
+    
+    subgraph "后台日志线程"
+        BG_THREAD[后台线程启动]
+        COND_WAIT[pthread_cond_wait]
+        WAKE_UP[被唤醒]
+        GET_DATA[获取缓冲区数据]
+        WRITE_FILE[writeLogData]
+        BUFFER_UPDATE[更新缓冲区状态]
+        LOOP_BACK[循环等待]
+    end
+    
+    subgraph "定时器系统"
+        TIMER_THREAD[定时器线程]
+        DELAY_EXPIRE[延迟定时器到期]
+        ON_DELAY[on_delay回调]
+        CHECK_BUFFER{缓冲区有数据?}
+        TIMER_SIGNAL[触发条件变量]
+    end
+    
+    subgraph "同步原语"
+        MXFILL["互斥锁: mxfill<br/>(保护缓冲区填充)"]
+        MXCOND["互斥锁: mxcond<br/>(保护条件变量)"]
+        CONDVAR["条件变量: condvar<br/>(唤醒后台线程)"]
+    end
+    
+    subgraph "共享数据"
+        OUTBUF["outbuf[8192]<br/>(输出缓冲区)"]
+        OUTFILL["outfill<br/>(填充位置)"]
+        THRUP["thrUp<br/>(线程状态标志)"]
+    end
+    
+    subgraph "触发条件"
+        HIGH_WATER["缓冲区达到高水位<br/>(4096字节)"]
+        FORCE_FLUSH["强制刷新<br/>(len=0)"]
+        TIMER_LAG["延迟定时器<br/>(100ms)"]
+    end
+    
+    %% 主线程流程
+    MAIN_THREAD --> LOG_CALL
+    LOG_CALL --> ADD_LOG
+    ADD_LOG --> MUTEX_LOCK
+    MUTEX_LOCK --> MXFILL
+    MXFILL --> BUFFER_OP
+    BUFFER_OP --> OUTBUF
+    BUFFER_OP --> OUTFILL
+    BUFFER_OP --> MUTEX_UNLOCK
+    MUTEX_UNLOCK --> CONDITION_CHECK
+    
+    %% 条件判断分支
+    CONDITION_CHECK -->|达到高水位或强制刷新| COND_SIGNAL
+    CONDITION_CHECK -->|正常写入| TIMER_SET
+    
+    %% 立即通知路径
+    COND_SIGNAL --> CONDVAR
+    CONDVAR --> WAKE_UP
+    
+    %% 延迟通知路径
+    TIMER_SET --> DELAY_EXPIRE
+    DELAY_EXPIRE --> ON_DELAY
+    ON_DELAY --> CHECK_BUFFER
+    CHECK_BUFFER -->|有数据| TIMER_SIGNAL
+    TIMER_SIGNAL --> CONDVAR
+    
+    %% 后台线程流程
+    BG_THREAD --> COND_WAIT
+    COND_WAIT --> MXCOND
+    WAKE_UP --> GET_DATA
+    GET_DATA --> MXFILL
+    GET_DATA --> OUTFILL
+    GET_DATA --> WRITE_FILE
+    WRITE_FILE --> BUFFER_UPDATE
+    BUFFER_UPDATE --> MXFILL
+    BUFFER_UPDATE --> OUTBUF
+    BUFFER_UPDATE --> LOOP_BACK
+    LOOP_BACK --> COND_WAIT
+    
+    %% 同步机制说明
+    HIGH_WATER -.-> CONDITION_CHECK
+    FORCE_FLUSH -.-> CONDITION_CHECK
+    TIMER_LAG -.-> TIMER_SET
+    
+    %% 样式定义
+    classDef mainThread fill:#e3f2fd
+    classDef bgThread fill:#e8f5e8
+    classDef timerSys fill:#fff3e0
+    classDef syncPrim fill:#f3e5f5
+    classDef sharedData fill:#ffebee
+    classDef trigger fill:#e1f5fe
+    
+    class MAIN_THREAD,LOG_CALL,ADD_LOG,MUTEX_LOCK,BUFFER_OP,MUTEX_UNLOCK,CONDITION_CHECK,COND_SIGNAL,TIMER_SET mainThread
+    class BG_THREAD,COND_WAIT,WAKE_UP,GET_DATA,WRITE_FILE,BUFFER_UPDATE,LOOP_BACK bgThread
+    class TIMER_THREAD,DELAY_EXPIRE,ON_DELAY,CHECK_BUFFER,TIMER_SIGNAL timerSys
+    class MXFILL,MXCOND,CONDVAR syncPrim
+    class OUTBUF,OUTFILL,THRUP sharedData
+    class HIGH_WATER,FORCE_FLUSH,TIMER_LAG trigger 

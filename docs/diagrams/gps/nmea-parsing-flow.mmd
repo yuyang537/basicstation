@@ -1,0 +1,180 @@
+flowchart TD
+    %% NMEA协议解析流程图
+    %% 展示从原始GPS数据到位置事件的完整处理流程
+    
+    START([GPS数据读取开始<br/>gps_read])
+    
+    %% 数据读取阶段
+    READ_DATA[从设备读取数据<br/>read(fd, buffer)]
+    CHECK_EOF{检查EOF?}
+    HANDLE_EOF[处理连接断开<br/>aio_close + reopen_timeout]
+    CHECK_ERROR{检查读取错误?}
+    HANDLE_ERROR[处理读取错误<br/>EAGAIN重试/其他致命错误]
+    
+    %% 数据缓冲处理
+    APPEND_BUFFER[追加到GPS缓冲区<br/>gpsline + gpsfill]
+    SCAN_NEWLINE[扫描换行符<br/>查找完整NMEA句子]
+    FOUND_LINE{找到完整行?}
+    
+    %% NMEA校验阶段
+    VERIFY_CKSUM[验证NMEA校验和<br/>nmea_cksum]
+    CKSUM_OK{校验和正确?}
+    LOG_GARBAGE[记录垃圾数据<br/>garbageCnt处理]
+    
+    %% NMEA句子识别
+    CHECK_GGA[检查$G?GGA句子<br/>GPS定位数据]
+    IS_GGA{是GGA句子?}
+    
+    %% GGA字段解析
+    PARSE_TIME[解析定位时间<br/>nmea_float]
+    PARSE_LAT[解析纬度<br/>nmea_float + direction]
+    PARSE_LON[解析经度<br/>nmea_float + direction]
+    PARSE_QUALITY[解析定位质量<br/>nmea_decimal]
+    PARSE_SAT[解析卫星数量<br/>nmea_decimal]
+    PARSE_DILUTION[解析精度因子<br/>nmea_float]
+    PARSE_ALT[解析海拔高度<br/>nmea_float]
+    
+    %% 解析验证
+    PARSE_OK{解析成功?}
+    LOG_PARSE_ERROR[记录解析错误<br/>句子格式不正确]
+    CHECK_FIX{有定位数据?}
+    LOG_NO_FIX[记录无定位警告<br/>GPS信号不良]
+    
+    %% 坐标转换
+    CONVERT_COORDS[坐标转换<br/>nmea_p2dec<br/>DDMM.MMMM -> DD.DDDD]
+    
+    %% 状态跟踪
+    TRACK_FIX_CHANGE[跟踪定位状态变化<br/>quality变化检测]
+    CHECK_FIX_STATUS{当前定位状态?}
+    
+    %% 事件处理分支
+    subgraph "FIX事件处理"
+        HANDLE_FIX[处理定位获得事件<br/>延迟报告机制]
+        CHECK_FIX_DELAY{满足报告延迟?}
+        SEND_FIX_EVENT[发送FIX事件<br/>send_gpsev_fix]
+        UPDATE_FIX_STATE[更新定位状态<br/>last_reported_fix=1]
+    end
+    
+    subgraph "NOFIX事件处理"
+        HANDLE_NOFIX[处理定位丢失事件<br/>指数退避机制]
+        CHECK_NOFIX_BACKOFF{满足退避阈值?}
+        SEND_NOFIX_EVENT[发送NOFIX事件<br/>send_gpsev_nofix]
+        UPDATE_NOFIX_STATE[更新退避状态<br/>nofix_backoff++]
+    end
+    
+    %% 位置变化检测
+    CHECK_POSITION[检查位置变化<br/>check_tolerance]
+    POSITION_CHANGED{位置发生变化?}
+    UPDATE_POSITION[更新位置信息<br/>保存到lastpos文件]
+    SEND_MOVE_EVENT[发送MOVE事件<br/>send_gpsev_fix]
+    
+    %% UBX协议处理分支
+    CHECK_UBX[检查UBX协议<br/>0xB5 0x62同步字节]
+    IS_UBX{是UBX帧?}
+    PARSE_UBX_HEADER[解析UBX头部<br/>长度+类型]
+    VERIFY_UBX_CKSUM[验证UBX校验<br/>Fletcher8算法]
+    UBX_CKSUM_OK{UBX校验正确?}
+    PARSE_NAV_TIMEGPS[解析NAV-TIMEGPS<br/>GPS时间数据]
+    LOG_UBX_TIME[记录GPS时间信息<br/>周+TOW+闰秒]
+    
+    %% 缓冲区管理
+    MANAGE_BUFFER[管理接收缓冲区<br/>移动未处理数据]
+    CONTINUE_READ[继续读取处理]
+    
+    %% 连接流程
+    START --> READ_DATA
+    READ_DATA --> CHECK_EOF
+    CHECK_EOF -->|是| HANDLE_EOF
+    CHECK_EOF -->|否| CHECK_ERROR
+    CHECK_ERROR -->|有错误| HANDLE_ERROR
+    CHECK_ERROR -->|无错误| APPEND_BUFFER
+    
+    %% 数据处理流程
+    APPEND_BUFFER --> SCAN_NEWLINE
+    SCAN_NEWLINE --> FOUND_LINE
+    FOUND_LINE -->|否| CONTINUE_READ
+    FOUND_LINE -->|是| VERIFY_CKSUM
+    
+    %% NMEA处理流程
+    VERIFY_CKSUM --> CKSUM_OK
+    CKSUM_OK -->|否| LOG_GARBAGE
+    CKSUM_OK -->|是| CHECK_GGA
+    CHECK_GGA --> IS_GGA
+    IS_GGA -->|否| CHECK_UBX
+    IS_GGA -->|是| PARSE_TIME
+    
+    %% GGA解析流程
+    PARSE_TIME --> PARSE_LAT
+    PARSE_LAT --> PARSE_LON
+    PARSE_LON --> PARSE_QUALITY
+    PARSE_QUALITY --> PARSE_SAT
+    PARSE_SAT --> PARSE_DILUTION
+    PARSE_DILUTION --> PARSE_ALT
+    PARSE_ALT --> PARSE_OK
+    
+    PARSE_OK -->|否| LOG_PARSE_ERROR
+    PARSE_OK -->|是| CHECK_FIX
+    CHECK_FIX -->|否| LOG_NO_FIX
+    CHECK_FIX -->|是| CONVERT_COORDS
+    
+    %% 状态处理流程
+    CONVERT_COORDS --> TRACK_FIX_CHANGE
+    TRACK_FIX_CHANGE --> CHECK_FIX_STATUS
+    CHECK_FIX_STATUS -->|有定位| HANDLE_FIX
+    CHECK_FIX_STATUS -->|无定位| HANDLE_NOFIX
+    
+    %% FIX事件流程
+    HANDLE_FIX --> CHECK_FIX_DELAY
+    CHECK_FIX_DELAY -->|是| SEND_FIX_EVENT
+    CHECK_FIX_DELAY -->|否| CHECK_POSITION
+    SEND_FIX_EVENT --> UPDATE_FIX_STATE
+    UPDATE_FIX_STATE --> CHECK_POSITION
+    
+    %% NOFIX事件流程
+    HANDLE_NOFIX --> CHECK_NOFIX_BACKOFF
+    CHECK_NOFIX_BACKOFF -->|是| SEND_NOFIX_EVENT
+    CHECK_NOFIX_BACKOFF -->|否| MANAGE_BUFFER
+    SEND_NOFIX_EVENT --> UPDATE_NOFIX_STATE
+    UPDATE_NOFIX_STATE --> MANAGE_BUFFER
+    
+    %% 位置变化处理
+    CHECK_POSITION --> POSITION_CHANGED
+    POSITION_CHANGED -->|是| UPDATE_POSITION
+    POSITION_CHANGED -->|否| MANAGE_BUFFER
+    UPDATE_POSITION --> SEND_MOVE_EVENT
+    SEND_MOVE_EVENT --> MANAGE_BUFFER
+    
+    %% UBX处理流程
+    CHECK_UBX --> IS_UBX
+    IS_UBX -->|否| MANAGE_BUFFER
+    IS_UBX -->|是| PARSE_UBX_HEADER
+    PARSE_UBX_HEADER --> VERIFY_UBX_CKSUM
+    VERIFY_UBX_CKSUM --> UBX_CKSUM_OK
+    UBX_CKSUM_OK -->|否| MANAGE_BUFFER
+    UBX_CKSUM_OK -->|是| PARSE_NAV_TIMEGPS
+    PARSE_NAV_TIMEGPS --> LOG_UBX_TIME
+    LOG_UBX_TIME --> MANAGE_BUFFER
+    
+    %% 循环继续
+    LOG_GARBAGE --> MANAGE_BUFFER
+    LOG_PARSE_ERROR --> MANAGE_BUFFER
+    LOG_NO_FIX --> MANAGE_BUFFER
+    MANAGE_BUFFER --> CONTINUE_READ
+    CONTINUE_READ --> SCAN_NEWLINE
+    
+    %% 错误恢复
+    HANDLE_EOF --> START
+    HANDLE_ERROR --> START
+    
+    %% 颜色样式
+    classDef startEnd fill:#c8e6c9
+    classDef process fill:#e1f5fe
+    classDef decision fill:#fff3e0
+    classDef error fill:#ffcdd2
+    classDef event fill:#f3e5f5
+    
+    class START,HANDLE_EOF,HANDLE_ERROR startEnd
+    class READ_DATA,APPEND_BUFFER,PARSE_TIME,PARSE_LAT,PARSE_LON,CONVERT_COORDS process
+    class CHECK_EOF,CHECK_ERROR,FOUND_LINE,CKSUM_OK,IS_GGA,PARSE_OK decision
+    class LOG_GARBAGE,LOG_PARSE_ERROR,LOG_NO_FIX error
+    class SEND_FIX_EVENT,SEND_NOFIX_EVENT,SEND_MOVE_EVENT event 

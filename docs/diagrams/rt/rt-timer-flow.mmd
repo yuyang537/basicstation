@@ -1,0 +1,65 @@
+graph TD
+    A["系统启动<br/>rt_ini()"] --> B["初始化UTC偏移量<br/>设置定时器队列为空"]
+    
+    %% 定时器创建和设置
+    C["创建定时器<br/>rt_iniTimer()"] --> D["设置初始状态<br/>next=TMR_NIL<br/>callback=指定函数"]
+    
+    D --> E{"需要启动定时器?"}
+    E -->|是| F["设置定时器<br/>rt_setTimer()"]
+    E -->|否| G["定时器待用"]
+    
+    F --> H{"定时器已激活?"}
+    H -->|是| I["清除旧定时器<br/>rt_clrTimer()"]
+    H -->|否| J["查找插入位置"]
+    
+    I --> J
+    J --> K["按截止时间排序<br/>插入优先级队列"]
+    
+    %% 定时器处理主循环
+    L["主事件循环<br/>rt_processTimerQ()"] --> M{"队列为空?"}
+    M -->|是| N["返回USTIME_MAX<br/>无定时器等待"]
+    M -->|否| O["检查最早定时器"]
+    
+    O --> P{"定时器到期?"}
+    P -->|否| Q["返回剩余时间"]
+    P -->|是| R["取出到期定时器"]
+    
+    R --> S["从队列中移除<br/>设置next=TMR_NIL"]
+    S --> T{"回调函数有效?"}
+    T -->|否| U["记录错误日志"]
+    T -->|是| V["执行回调函数<br/>callback(tmr)"]
+    
+    U --> L
+    V --> L
+    
+    %% 特殊操作
+    W["立即让出CPU<br/>rt_yieldTo()"] --> X["设置当前时间为截止时间<br/>立即触发"]
+    X --> F
+    
+    Y["清除定时器<br/>rt_clrTimer()"] --> Z{"定时器在队列中?"}
+    Z -->|是| AA["从队列中移除<br/>标记为非活动"]
+    Z -->|否| BB["无操作"]
+    
+    %% 配置管理
+    CC["设置定时器+回调<br/>rt_setTimerCb()"] --> DD["更新回调函数"]
+    DD --> F
+    
+    %% 时间管理
+    EE["获取系统时间<br/>rt_getTime()"] --> FF["返回单调时钟时间"]
+    GG["获取UTC时间<br/>rt_getUTC()"] --> HH["系统时间+UTC偏移"]
+    
+    %% 样式定义
+    classDef init fill:#e1f5fe
+    classDef timer fill:#f3e5f5
+    classDef process fill:#e8f5e8
+    classDef decision fill:#fff3e0
+    classDef error fill:#ffebee
+    classDef time fill:#f1f8e9
+    
+    class A,B init
+    class C,D,F,I,J,K,W,X,CC,DD timer
+    class L,R,S,V,AA,FF,HH process
+    class E,H,M,P,T,Z decision
+    class U error
+    class EE,GG time
+``` 

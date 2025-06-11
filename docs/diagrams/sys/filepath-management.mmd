@@ -1,0 +1,134 @@
+flowchart TD
+    %% 文件路径管理系统流程图
+    
+    START([路径请求])
+    
+    %% 路径输入处理
+    INPUT[makeFilepath<br/>prefix, suffix, cache, readable]
+    FREE_CACHE[释放现有缓存<br/>rt_free(*pCachedFile)]
+    INIT_BUFFER[初始化路径缓冲区<br/>dbuf_ini(filepath)]
+    
+    %% 前缀类型检查
+    CHECK_PREFIX{检查前缀类型}
+    TEMP_PREFIX[~temp/ 前缀<br/>使用临时目录]
+    HOME_PREFIX[~/ 前缀<br/>使用主目录]
+    ABS_PREFIX[绝对路径<br/>直接使用]
+    REL_PREFIX[相对路径<br/>使用当前目录]
+    
+    %% 目录路径添加
+    ADD_TEMP[添加tempDir路径<br/>跳过"~temp/"前缀]
+    ADD_HOME[添加homeDir路径<br/>跳过"~/"前缀]
+    KEEP_ABS[保持原始路径<br/>绝对路径或./路径]
+    
+    %% 字符串拼接循环
+    STR_LOOP{处理字符串<br/>fnx=0:prefix<br/>fnx=1:suffix}
+    CHAR_LOOP{逐字符处理}
+    
+    %% 特殊字符处理
+    CHECK_CHAR{字符类型检查}
+    HASH_CHAR[# 字符处理<br/>从进程模式展开]
+    QUESTION_CHAR[? 字符处理<br/>进程号展开]
+    NORMAL_CHAR[普通字符<br/>直接添加]
+    
+    %% 进程号处理
+    CHECK_SLAVE{是从进程?<br/>sys_slaveIdx >= 0}
+    ADD_SLAVE_SUFFIX[添加"-进程号"<br/>xprintf "-%d"]
+    ADD_PROC_NUM[添加进程号<br/>主进程用0]
+    SKIP_HASH[跳过#字符<br/>主进程模式不展开]
+    
+    %% 路径验证
+    CHECK_LENGTH{路径长度检查<br/>xeos(&b)}
+    PATH_TOO_LONG[路径过长错误<br/>rt_fatal]
+    
+    %% 可读性检查
+    CHECK_READABLE{需要检查可读性?<br/>isReadable == 1}
+    ACCESS_CHECK[fs_access(R_OK)<br/>检查文件访问权限]
+    ACCESS_OK{文件可读?}
+    CLEAR_BUFFER[清空缓冲区<br/>文件不存在]
+    
+    %% 结果处理
+    CREATE_RESULT[创建结果字符串<br/>rt_strdup或NULL]
+    UPDATE_CACHE[更新缓存<br/>*pCachedFile = result]
+    RETURN[返回文件路径]
+    
+    %% 文件系统应用示例
+    subgraph "路径展开示例"
+        EX1["~/tc.uri" → "/home/station/tc.uri"]
+        EX2["~temp/tc-temp.key" → "/tmp/station/tc-temp.key"]
+        EX3["log#.txt" → "log-1.txt" (从进程1)]
+        EX4["config?.json" → "config0.json" (主进程)]
+    end
+    
+    %% 主流程连接
+    START --> INPUT
+    INPUT --> FREE_CACHE
+    FREE_CACHE --> INIT_BUFFER
+    INIT_BUFFER --> CHECK_PREFIX
+    
+    CHECK_PREFIX -->|~temp/| TEMP_PREFIX
+    CHECK_PREFIX -->|~/| HOME_PREFIX
+    CHECK_PREFIX -->|/开头| ABS_PREFIX
+    CHECK_PREFIX -->|其他| REL_PREFIX
+    
+    TEMP_PREFIX --> ADD_TEMP
+    HOME_PREFIX --> ADD_HOME
+    ABS_PREFIX --> KEEP_ABS
+    REL_PREFIX --> ADD_HOME
+    
+    ADD_TEMP --> STR_LOOP
+    ADD_HOME --> STR_LOOP
+    KEEP_ABS --> STR_LOOP
+    
+    STR_LOOP -->|fnx < 2| CHAR_LOOP
+    STR_LOOP -->|fnx >= 2| CHECK_LENGTH
+    
+    CHAR_LOOP --> CHECK_CHAR
+    CHECK_CHAR -->|#| HASH_CHAR
+    CHECK_CHAR -->|?| QUESTION_CHAR
+    CHECK_CHAR -->|其他| NORMAL_CHAR
+    
+    HASH_CHAR --> CHECK_SLAVE
+    CHECK_SLAVE -->|是| ADD_SLAVE_SUFFIX
+    CHECK_SLAVE -->|否| SKIP_HASH
+    
+    QUESTION_CHAR --> ADD_PROC_NUM
+    
+    ADD_SLAVE_SUFFIX --> CHAR_LOOP
+    ADD_PROC_NUM --> CHAR_LOOP
+    SKIP_HASH --> CHAR_LOOP
+    NORMAL_CHAR --> CHAR_LOOP
+    
+    CHAR_LOOP -->|字符串结束| STR_LOOP
+    
+    CHECK_LENGTH -->|正常| CHECK_READABLE
+    CHECK_LENGTH -->|过长| PATH_TOO_LONG
+    
+    CHECK_READABLE -->|否| CREATE_RESULT
+    CHECK_READABLE -->|是| ACCESS_CHECK
+    
+    ACCESS_CHECK --> ACCESS_OK
+    ACCESS_OK -->|是| CREATE_RESULT
+    ACCESS_OK -->|否| CLEAR_BUFFER
+    
+    CLEAR_BUFFER --> CREATE_RESULT
+    CREATE_RESULT --> UPDATE_CACHE
+    UPDATE_CACHE --> RETURN
+    
+    %% 错误处理
+    PATH_TOO_LONG --> RETURN
+    
+    %% 样式定义
+    classDef startEndClass fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+    classDef processClass fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef decisionClass fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef errorClass fill:#ffebee,stroke:#d32f2f,stroke-width:2px
+    classDef exampleClass fill:#f1f8e9,stroke:#689f38,stroke-width:2px
+    classDef charClass fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    
+    class START,RETURN startEndClass
+    class INPUT,FREE_CACHE,INIT_BUFFER,ADD_TEMP,ADD_HOME,KEEP_ABS,CREATE_RESULT,UPDATE_CACHE,ACCESS_CHECK,CLEAR_BUFFER processClass
+    class CHECK_PREFIX,STR_LOOP,CHAR_LOOP,CHECK_CHAR,CHECK_SLAVE,CHECK_LENGTH,CHECK_READABLE,ACCESS_OK decisionClass
+    class PATH_TOO_LONG errorClass
+    class EX1,EX2,EX3,EX4 exampleClass
+    class HASH_CHAR,QUESTION_CHAR,NORMAL_CHAR,ADD_SLAVE_SUFFIX,ADD_PROC_NUM,SKIP_HASH charClass
+    class TEMP_PREFIX,HOME_PREFIX,ABS_PREFIX,REL_PREFIX charClass 

@@ -1,0 +1,135 @@
+flowchart TD
+    Start([客户端发送GET /api/config请求])
+    
+    subgraph "HTTP层处理"
+        A1[接收HTTP请求]
+        A2[解析请求头]
+        A3[提取请求方法和路径]
+        A4[创建httpd_pstate_t结构]
+    end
+    
+    subgraph "路由匹配"
+        B1[web.c路由系统]
+        B2[计算路径CRC哈希]
+        B3{匹配SYS_HANDLERS?}
+        B4[找到J_config路由]
+        B5[调用handle_config函数]
+    end
+    
+    subgraph "方法分发"
+        C1[handle_config入口]
+        C2{检查HTTP方法}
+        C3[确认为GET请求]
+        C4[调用handle_config_GET]
+        C5[返回405错误]
+    end
+    
+    subgraph "JSON响应构建"
+        D1[分配2KB响应缓冲区]
+        D2[初始化JSON编码器]
+        D3[开始根对象]
+        D4[添加config键]
+        D5[开始配置数组]
+    end
+    
+    subgraph "配置数据遍历"
+        E1[获取conf_params指针]
+        E2{是否还有配置项?}
+        E3[开始配置对象]
+        E4[编码type字段]
+        E5[编码name字段]
+        E6[编码value字段]
+        E7[编码src字段]
+        E8[结束配置对象]
+        E9[移动到下个配置项]
+    end
+    
+    subgraph "响应完成"
+        F1[结束配置数组]
+        F2[结束根对象]
+        F3[设置Content-Type]
+        F4[设置响应长度]
+        F5[返回HTTP 200]
+    end
+    
+    subgraph "HTTP响应"
+        G1[构建HTTP响应头]
+        G2[发送响应数据]
+        G3[记录访问日志]
+        G4[清理连接资源]
+    end
+    
+    End([客户端接收JSON响应])
+    
+    %% 主流程连接
+    Start --> A1
+    A1 --> A2
+    A2 --> A3
+    A3 --> A4
+    A4 --> B1
+    
+    B1 --> B2
+    B2 --> B3
+    B3 -->|是| B4
+    B3 -->|否| Error1[返回404错误]
+    B4 --> B5
+    
+    B5 --> C1
+    C1 --> C2
+    C2 -->|GET| C3
+    C2 -->|其他| C5
+    C3 --> C4
+    C5 --> Error2[返回405错误]
+    
+    C4 --> D1
+    D1 --> D2
+    D2 --> D3
+    D3 --> D4
+    D4 --> D5
+    
+    D5 --> E1
+    E1 --> E2
+    E2 -->|是| E3
+    E2 -->|否| F1
+    E3 --> E4
+    E4 --> E5
+    E5 --> E6
+    E6 --> E7
+    E7 --> E8
+    E8 --> E9
+    E9 --> E2
+    
+    F1 --> F2
+    F2 --> F3
+    F3 --> F4
+    F4 --> F5
+    
+    F5 --> G1
+    G1 --> G2
+    G2 --> G3
+    G3 --> G4
+    G4 --> End
+    
+    %% 错误处理路径
+    Error1 --> G1
+    Error2 --> G1
+    
+    %% 样式定义
+    classDef startEnd fill:#c8e6c9
+    classDef httpLayer fill:#e1f5fe
+    classDef routeLayer fill:#f3e5f5
+    classDef methodLayer fill:#fff3e0
+    classDef jsonLayer fill:#fce4ec
+    classDef configLayer fill:#e8f5e8
+    classDef responseLayer fill:#f1f8e9
+    classDef errorPath fill:#ffebee
+    
+    class Start,End startEnd
+    class A1,A2,A3,A4 httpLayer
+    class B1,B2,B3,B4,B5 routeLayer
+    class C1,C2,C3,C4,C5 methodLayer
+    class D1,D2,D3,D4,D5 jsonLayer
+    class E1,E2,E3,E4,E5,E6,E7,E8,E9 configLayer
+    class F1,F2,F3,F4,F5 responseLayer
+    class G1,G2,G3,G4 httpLayer
+    class Error1,Error2 errorPath 

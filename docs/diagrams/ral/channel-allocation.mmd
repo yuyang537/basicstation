@@ -1,0 +1,88 @@
+graph TD
+    subgraph "信道分配输入"
+        UPCHS["上行信道列表<br/>chdefl_t upchs<br/>• 频率数组 freq[64]<br/>• 参数数组 rps[64]"]
+        
+        subgraph "信道类型"
+            CH_125["125kHz LoRa信道<br/>• SF7-SF12<br/>• 带宽窄，容易分配"]
+            CH_FSK["FSK信道<br/>• 50kbps波特率<br/>• 专用调制解调器"]
+            CH_FAST["快速LoRa信道<br/>• 250kHz/500kHz<br/>• 大带宽，限制多"]
+        end
+    end
+
+    subgraph "SX130X硬件资源"
+        subgraph "单个芯片资源"
+            RFF["2个射频前端(RFF)<br/>• RFF0: 频率范围A<br/>• RFF1: 频率范围B"]
+            MODEM["10个调制解调器<br/>• 0-7: 125kHz LoRa<br/>• 8: 快速LoRa专用<br/>• 9: FSK专用"]
+        end
+        
+        subgraph "频率约束"
+            FREQ_125["125kHz约束<br/>±400kHz偏移"]
+            FREQ_250["250kHz约束<br/>±375kHz偏移"] 
+            FREQ_500["500kHz约束<br/>±300kHz偏移"]
+        end
+    end
+
+    subgraph "分配算法流程"
+        START["开始分配<br/>ral_challoc()"]
+        
+        PHASE1["第一阶段<br/>分配125kHz LoRa<br/>• 使用调制解调器0-7<br/>• 优先级最高"]
+        
+        PHASE2["第二阶段<br/>分配FSK信道<br/>• 使用调制解调器9<br/>• 每芯片仅一个"]
+        
+        PHASE3["第三阶段<br/>分配快速LoRa<br/>• 使用调制解调器8<br/>• 频率约束严格"]
+        
+        CHECK_RFF["检查射频前端<br/>频率兼容性<br/>• 计算频率跨度<br/>• 验证偏移限制"]
+        
+        UPDATE_SPAN["更新频率跨度<br/>• 扩展RFF范围<br/>• 优化中心频率"]
+        
+        CALLBACK["回调通知<br/>• CHALLOC_CH<br/>• 信道分配成功"]
+        
+        NEXT_CHIP["移至下一芯片<br/>• chip_idx++<br/>• 重置modem_idx"]
+        
+        DONE["分配完成<br/>CHALLOC_DONE"]
+    end
+
+    subgraph "分配结果"
+        RESULT["分配结果<br/>challoc_t"]
+        
+        subgraph "每个信道"
+            CH_INFO["信道信息<br/>• chip: 芯片编号<br/>• chan: 调制解调器编号<br/>• rff: 射频前端编号<br/>• rff_freq: 中心频率<br/>• chdef: 信道定义"]
+        end
+        
+        subgraph "每个芯片"
+            CHIP_INFO["芯片信息<br/>• chipid: 芯片ID<br/>• chans: 信道数量<br/>• minFreq: 最小频率<br/>• maxFreq: 最大频率"]
+        end
+    end
+
+    %% 流程连接
+    UPCHS --> START
+    START --> PHASE1
+    PHASE1 --> CHECK_RFF
+    CHECK_RFF --> UPDATE_SPAN
+    UPDATE_SPAN --> CALLBACK
+    CALLBACK --> PHASE2
+    PHASE2 --> PHASE3
+    PHASE3 --> NEXT_CHIP
+    NEXT_CHIP --> DONE
+    DONE --> RESULT
+
+    %% 约束连接
+    RFF --> CHECK_RFF
+    FREQ_125 --> CHECK_RFF
+    FREQ_250 --> CHECK_RFF
+    FREQ_500 --> CHECK_RFF
+    
+    CH_125 --> PHASE1
+    CH_FSK --> PHASE2
+    CH_FAST --> PHASE3
+
+    %% 样式定义
+    classDef inputStyle fill:#e3f2fd
+    classDef hwStyle fill:#f1f8e9
+    classDef algoStyle fill:#fff3e0
+    classDef resultStyle fill:#fce4ec
+
+    class UPCHS,CH_125,CH_FSK,CH_FAST inputStyle
+    class RFF,MODEM,FREQ_125,FREQ_250,FREQ_500 hwStyle
+    class START,PHASE1,PHASE2,PHASE3,CHECK_RFF,UPDATE_SPAN,CALLBACK,NEXT_CHIP,DONE algoStyle
+    class RESULT,CH_INFO,CHIP_INFO resultStyle 

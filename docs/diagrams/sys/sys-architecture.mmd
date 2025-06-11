@@ -1,0 +1,128 @@
+graph TB
+    %% BasicStation系统核心模块架构图
+    
+    subgraph "应用层"
+        APP[应用程序]
+        TC[TC服务]
+        CUPS[CUPS服务]
+        WEB[Web服务]
+    end
+    
+    subgraph "系统模块 (sys.c)"
+        direction TB
+        
+        subgraph "文件路径管理"
+            FPM[makeFilepath函数]
+            FPSV[路径变量展开<br/># 从进程号<br/>? 进程号<br/>~ 主目录<br/>~temp 临时目录]
+            FPC[路径缓存机制]
+        end
+        
+        subgraph "配置文件管理"
+            CFG[配置文件框架]
+            FNAME[文件名生成器<br/>configFilename<br/>transactionFilename]
+            FCACHE[文件名缓存数组<br/>CFNS数组]
+        end
+        
+        subgraph "安全凭证管理"
+            CRED[凭证处理器<br/>sys_cred*函数]
+            ASN1[ASN.1解析器<br/>证书/密钥分离]
+            CREDTX[凭证事务管理<br/>分段接收<br/>原子写入]
+        end
+        
+        subgraph "配置更新事务"
+            TXM[事务管理器]
+            BACKUP[备份机制<br/>backupConfigFiles]
+            UPDATE[更新机制<br/>updateConfigFiles]
+            ROLLBACK[回滚恢复<br/>checkRollForward]
+        end
+        
+        subgraph "文件操作API"
+            READ[readFile<br/>sys_readFile]
+            WRITE[writeFile<br/>sys_writeFile]
+            CHECK[sizeFile<br/>sys_checkFile]
+        end
+        
+        subgraph "系统功能"
+            EUI[EUI管理<br/>sys_eui]
+            URI[URI缓存<br/>sys_uri]
+            KEEP[网络保活<br/>sys_keepAlive]
+            WEB_FILE[Web文件服务<br/>sys_webFile]
+        end
+    end
+    
+    subgraph "文件系统层"
+        FS[文件系统抽象层<br/>fs.h]
+        DISK[(磁盘存储)]
+    end
+    
+    subgraph "配置文件组织"
+        direction LR
+        
+        subgraph "TC配置"
+            TC_REG[tc.uri<br/>tc.trust<br/>tc.crt<br/>tc.key]
+            TC_BAK[tc-bak.*]
+            TC_BOOT[tc-boot.*]
+            TC_TEMP[tc-temp.*]
+        end
+        
+        subgraph "CUPS配置"
+            CUPS_REG[cups.uri<br/>cups.trust<br/>cups.crt<br/>cups.key]
+            CUPS_BAK[cups-bak.*]
+            CUPS_BOOT[cups-boot.*]
+            CUPS_TEMP[cups-temp.*]
+        end
+        
+        subgraph "事务标记文件"
+            TXF[*.upd 更新标记<br/>*.cpy 复制标记<br/>*-bak.done 完成标记]
+        end
+    end
+    
+    %% 连接关系
+    APP --> CFG
+    TC --> CRED
+    CUPS --> CRED
+    WEB --> WEB_FILE
+    
+    CFG --> FNAME
+    CFG --> TXM
+    FNAME --> FCACHE
+    
+    CRED --> ASN1
+    CRED --> CREDTX
+    CREDTX --> TXM
+    
+    TXM --> BACKUP
+    TXM --> UPDATE
+    TXM --> ROLLBACK
+    
+    FPM --> FPSV
+    FPM --> FPC
+    
+    READ --> FS
+    WRITE --> FS
+    CHECK --> FS
+    FS --> DISK
+    
+    TXM --> READ
+    TXM --> WRITE
+    BACKUP --> READ
+    BACKUP --> WRITE
+    UPDATE --> FS
+    
+    CFG -.-> TC_REG
+    CFG -.-> CUPS_REG
+    TXM -.-> TC_TEMP
+    TXM -.-> CUPS_TEMP
+    BACKUP -.-> TC_BAK
+    BACKUP -.-> CUPS_BAK
+    ROLLBACK -.-> TXF
+    
+    classDef moduleClass fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef functionClass fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef fileClass fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef dataClass fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    
+    class CFG,CRED,TXM,FPM moduleClass
+    class FNAME,ASN1,BACKUP,UPDATE,ROLLBACK,READ,WRITE,CHECK functionClass
+    class TC_REG,CUPS_REG,TC_BAK,CUPS_BAK,TC_TEMP,CUPS_TEMP,TXF fileClass
+    class FCACHE,FPSV,FPC,CREDTX dataClass 

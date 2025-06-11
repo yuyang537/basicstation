@@ -1,0 +1,112 @@
+stateDiagram-v2
+    [*] --> CUPS_INI : sys_triggerCUPS()
+    
+    CUPS_INI --> CUPS_HTTP_REQ_PEND : cups_start()<br/>发送update-info请求
+    
+    CUPS_HTTP_REQ_PEND --> CUPS_FEED_CUPS_URI : 收到HTTP 200响应<br/>开始接收URI段
+    CUPS_HTTP_REQ_PEND --> CUPS_ERR_REJECTED : HTTP错误状态<br/>服务器拒绝请求
+    CUPS_HTTP_REQ_PEND --> CUPS_ERR_TIMEOUT : 连接超时
+    CUPS_HTTP_REQ_PEND --> CUPS_ERR_CLOSED : 连接意外关闭
+    
+    CUPS_FEED_CUPS_URI --> CUPS_FEED_TC_URI : CUPS URI段接收完成<br/>开始接收TC URI段
+    CUPS_FEED_TC_URI --> CUPS_FEED_CUPS_CRED : TC URI段接收完成<br/>开始接收CUPS凭据段
+    
+    CUPS_FEED_CUPS_CRED --> CUPS_FEED_TC_CRED : CUPS凭据段接收完成<br/>开始接收TC凭据段
+    CUPS_FEED_TC_CRED --> CUPS_FEED_SIGNATURE : TC凭据段接收完成<br/>开始接收签名段
+    
+    CUPS_FEED_SIGNATURE --> CUPS_FEED_UPDATE : 签名段接收完成<br/>开始接收更新段
+    CUPS_FEED_UPDATE --> CUPS_DONE : 更新段接收完成<br/>所有数据接收完成
+    
+    state "错误处理" as ErrorHandling {
+        CUPS_ERR_FAILED --> [*] : 一般性错误<br/>快速重试
+        CUPS_ERR_NOURI --> [*] : 没有配置URI<br/>轮换凭据集
+        CUPS_ERR_TIMEOUT --> [*] : 连接超时<br/>快速重试
+        CUPS_ERR_REJECTED --> [*] : 服务器拒绝<br/>轮换凭据集
+        CUPS_ERR_CLOSED --> [*] : 连接关闭<br/>快速重试
+        CUPS_ERR_DEAD --> [*] : 会话已释放<br/>终态
+    }
+    
+    state "成功完成处理" as SuccessHandling {
+        CUPS_DONE --> ProcessUpdates : cups_ondone()<br/>处理更新标志
+        
+        state ProcessUpdates {
+            [*] --> CheckFirmware : 检查固件更新标志
+            CheckFirmware --> VerifySignature : 有更新包且有签名
+            CheckFirmware --> NoSignatureCheck : 有更新包但无签名
+            CheckFirmware --> CheckTC : 无固件更新
+            
+            VerifySignature --> RunUpdate : 签名验证成功
+            VerifySignature --> AbortUpdate : 签名验证失败
+            NoSignatureCheck --> RunUpdate : 无密钥文件
+            NoSignatureCheck --> AbortUpdate : 有密钥但无签名
+            
+            RunUpdate --> CheckTC : sys_runUpdate()
+            AbortUpdate --> CheckTC : sys_abortUpdate()
+            
+            CheckTC --> RestartTC : TC配置有更新
+            CheckTC --> CheckCUPS : TC配置无更新
+            RestartTC --> CheckCUPS : sys_stopTC()
+            
+            CheckCUPS --> ImmediateReconnect : CUPS配置有更新
+            CheckCUPS --> ScheduleNext : CUPS配置无更新
+            
+            ImmediateReconnect --> [*] : 立即重连CUPS
+            ScheduleNext --> [*] : 安排下次定期同步
+        }
+    }
+    
+    %% 错误状态转换
+    CUPS_HTTP_REQ_PEND --> CUPS_ERR_FAILED : 协议错误
+    CUPS_FEED_CUPS_URI --> CUPS_ERR_FAILED : 数据格式错误
+    CUPS_FEED_TC_URI --> CUPS_ERR_FAILED : 段长度非法
+    CUPS_FEED_CUPS_CRED --> CUPS_ERR_FAILED : 写入失败
+    CUPS_FEED_TC_CRED --> CUPS_ERR_FAILED : 写入失败
+    CUPS_FEED_SIGNATURE --> CUPS_ERR_FAILED : 签名格式错误
+    CUPS_FEED_UPDATE --> CUPS_ERR_FAILED : 更新写入失败
+    
+    %% 超时和连接错误（任何状态都可能发生）
+    CUPS_FEED_CUPS_URI --> CUPS_ERR_TIMEOUT : 数据接收超时
+    CUPS_FEED_TC_URI --> CUPS_ERR_TIMEOUT : 数据接收超时
+    CUPS_FEED_CUPS_CRED --> CUPS_ERR_TIMEOUT : 数据接收超时
+    CUPS_FEED_TC_CRED --> CUPS_ERR_TIMEOUT : 数据接收超时
+    CUPS_FEED_SIGNATURE --> CUPS_ERR_TIMEOUT : 数据接收超时
+    CUPS_FEED_UPDATE --> CUPS_ERR_TIMEOUT : 数据接收超时
+    
+    CUPS_FEED_CUPS_URI --> CUPS_ERR_CLOSED : 连接关闭
+    CUPS_FEED_TC_URI --> CUPS_ERR_CLOSED : 连接关闭
+    CUPS_FEED_CUPS_CRED --> CUPS_ERR_CLOSED : 连接关闭
+    CUPS_FEED_TC_CRED --> CUPS_ERR_CLOSED : 连接关闭
+    CUPS_FEED_SIGNATURE --> CUPS_ERR_CLOSED : 连接关闭
+    CUPS_FEED_UPDATE --> CUPS_ERR_CLOSED : 连接关闭
+    
+    %% 最终回到初始状态进行重试或定期同步
+    ProcessUpdates --> [*] : 完成处理，安排下次同步
+    ErrorHandling --> [*] : 错误处理完成，安排重试
+    
+    note right of CUPS_INI
+        初始化阶段：
+        - 创建CUPS会话对象
+        - 设置HTTP连接
+        - 配置超时定时器
+    end note
+    
+    note right of CUPS_HTTP_REQ_PEND
+        请求阶段：
+        - 发送POST /update-info
+        - 包含站点信息JSON
+        - 等待服务器响应
+    end note
+    
+    note right of CUPS_FEED_SIGNATURE
+        签名处理：
+        - 接收ECDSA签名数据
+        - 计算固件SHA-512哈希
+        - 准备签名验证
+    end note
+    
+    note right of VerifySignature
+        签名验证：
+        - 遍历所有验证密钥
+        - SECP256R1椭圆曲线
+        - ECDSA签名算法
+    end note 

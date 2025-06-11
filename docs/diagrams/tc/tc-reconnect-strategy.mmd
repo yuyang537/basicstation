@@ -1,0 +1,87 @@
+graph TD
+    A["🚨 连接错误发生"] --> B{错误类型判断}
+    
+    B -->|TC_ERR_REJECTED<br/>TC_ERR_NOURI| C["❌ 配置问题"]
+    B -->|TC_ERR_CLOSED| D["🔗 连接关闭"]
+    B -->|TC_ERR_FAILED<br/>TC_ERR_TIMEOUT| E["💥 连接失败"]
+    
+    %% 配置问题处理
+    C --> F{重试次数检查}
+    F -->|retries >= 10| G["🛑 停止TC引擎<br/>sys_stopTC()"]
+    F -->|retries < 10| H["⚙️ 触发CUPS更新<br/>sys_triggerCUPS()"]
+    F -->|sys_noCUPS=true| I["🔄 INFOS退避重连"]
+    
+    %% 连接关闭处理
+    D --> J{是否有MUXS URI}
+    J -->|有URI| K{MUXS重试次数}
+    J -->|无URI| I
+    
+    K -->|retries <= 4| L["⚡ MUXS快速重连"]
+    K -->|retries > 4| M["🔄 清除URI<br/>重新INFOS查询"]
+    
+    %% 连接失败处理
+    E --> N{重试策略选择}
+    N -->|有MUXS URI<br/>retries <= 4| L
+    N -->|其他情况| I
+    
+    %% MUXS快速重连逻辑
+    L --> O["⏰ 计算MUXS退避时间<br/>backoff = 1 << retries"]
+    O --> P["📊 设置退避状态<br/>TC_MUXS_BACKOFF"]
+    P --> Q["⏲️ 启动退避定时器<br/>rt_setTimerCb(backoff)"]
+    Q --> R["⏳ 等待退避时间<br/>1,2,4,8,16秒"]
+    R --> S["🔄 直接重连MUXS<br/>tc_connect_muxs()"]
+    S --> T["🔄 retries++"]
+    
+    %% INFOS退避重连逻辑
+    I --> U["⏰ 计算INFOS退避时间<br/>backoff = min(retries, 6) * 10"]
+    U --> V["📊 设置退避状态<br/>TC_INFOS_BACKOFF"]
+    V --> W["⏲️ 启动退避定时器<br/>rt_setTimerCb(backoff * 10)"]
+    W --> X["⏳ 等待退避时间<br/>10,20,30,40,50,60秒"]
+    X --> Y["🔄 重新创建TC对象<br/>tc_free() + tc_ini()"]
+    Y --> Z["🚀 重新启动连接<br/>tc_start()"]
+    Z --> AA["🔄 retries++"]
+    
+    %% 成功路径
+    S --> BB{MUXS连接结果}
+    BB -->|成功| CC["✅ 连接恢复<br/>TC_MUXS_CONNECTED"]
+    BB -->|失败| DD{还能快速重连?}
+    DD -->|是| L
+    DD -->|否| M
+    
+    Z --> EE{INFOS查询结果}
+    EE -->|成功| FF["✅ 获取新MUXS URI<br/>继续MUXS连接"]
+    EE -->|失败| GG{还能重试?}
+    GG -->|是| I
+    GG -->|否| H
+    
+    %% 最终处理
+    G --> HH["🏁 系统状态<br/>SYSIS_TC_DISCONNECTED"]
+    H --> II["⏳ 等待CUPS完成<br/>配置更新后重启"]
+    CC --> JJ["🔄 开始正常数据传输<br/>S2E协议处理"]
+    
+    %% 退避时间表
+    subgraph "⏰ 退避时间算法"
+        KK["🚀 MUXS快速重连<br/>指数退避：2^n 秒<br/>• 重试1: 2秒<br/>• 重试2: 4秒<br/>• 重试3: 8秒<br/>• 重试4: 16秒<br/>• 重试5+: 转INFOS重连"]
+        
+        LL["🔄 INFOS重连退避<br/>线性退避：min(n,6)*10 秒<br/>• 重试1: 10秒<br/>• 重试2: 20秒<br/>• 重试3: 30秒<br/>• 重试4: 40秒<br/>• 重试5: 50秒<br/>• 重试6+: 60秒"]
+    end
+    
+    %% 状态转换说明
+    subgraph "📊 状态转换"
+        MM["🔄 状态切换<br/>• TC_ERR_* → TC_MUXS_BACKOFF<br/>• TC_ERR_* → TC_INFOS_BACKOFF<br/>• TC_*_BACKOFF → TC_*_REQ_PEND<br/>• 错误 → 重试 → 成功/失败"]
+    end
+    
+    %% 样式定义
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef decision fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef success fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef backoff fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef info fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    
+    class A,C,E,G error
+    class B,F,J,K,N,BB,DD,EE,GG decision
+    class H,I,L,M,O,P,Q,S,T,U,V,W,Y,Z,AA process
+    class CC,JJ,FF success
+    class R,X,KK,LL backoff
+    class HH,II,MM info 

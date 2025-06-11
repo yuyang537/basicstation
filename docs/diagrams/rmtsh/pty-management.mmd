@@ -1,0 +1,204 @@
+graph TD
+    subgraph "伪终端创建过程"
+        A1[posix_openpt]
+        A2[创建PTY主端设备]
+        A3[设置O_RDWR|O_NONBLOCK]
+        A4[获得/dev/ptmx文件描述符]
+        
+        B1[grantpt]
+        B2[设置PTY从端权限]
+        B3[chown更改所有者]
+        B4[chmod设置访问权限]
+        
+        C1[unlockpt]
+        C2[解锁PTY从端]
+        C3[允许从端设备访问]
+        
+        D1[ptsname获取从端路径]
+        D2[open从端设备文件]
+        D3[获得PTY从端文件描述符]
+    end
+    
+    subgraph "主端BasicStation进程"
+        M1[PTY Master主端]
+        M2[非阻塞读写模式]
+        M3[AIO异步IO管理]
+        M4[up_read读取回调]
+        M5[dn_write写入回调]
+        
+        subgraph "上行数据流"
+            U1[从PTY主端读取]
+            U2[upbuf缓冲区管理]
+            U3[数据压缩和流控]
+            U4[WebSocket二进制传输]
+        end
+        
+        subgraph "下行数据流"
+            D1[接收WebSocket数据]
+            D2[dnbuf缓冲区填充]
+            D3[异步写入PTY主端]
+            D4[Shell进程接收输入]
+        end
+    end
+    
+    subgraph "从端Shell进程"
+        S1[PTY Slave从端]
+        S2[标准终端接口]
+        S3[RAW模式配置]
+        S4[控制终端设置]
+        
+        subgraph "终端配置过程"
+            T1[tcgetattr获取设置]
+            T2[cfmakeraw配置RAW模式]
+            T3[禁用行缓冲]
+            T4[禁用回显ECHO]
+            T5[禁用信号生成]
+            T6[tcsetattr应用设置]
+        end
+        
+        subgraph "stdio重定向"
+            R1[dup2重定向stdin]
+            R2[dup2重定向stdout]
+            R3[dup2重定向stderr]
+            R4[所有IO通过PTY]
+        end
+        
+        subgraph "会话管理"
+            SE1[setsid创建新会话]
+            SE2[成为会话领导者]
+            SE3[ioctl TIOCSCTTY]
+            SE4[设置控制终端]
+            SE5[Shell进程组管理]
+        end
+    end
+    
+    subgraph "数据流处理机制"
+        subgraph "上行流控制"
+            UF1[Shell输出→PTY从端]
+            UF2[内核PTY缓冲区]
+            UF3[PTY主端→BasicStation]
+            UF4[upbuf智能缓冲]
+            UF5[压缩算法优化]
+            UF6[网络传输分片]
+        end
+        
+        subgraph "下行流控制"
+            DF1[远程输入→WebSocket]
+            DF2[BasicStation→PTY主端]
+            DF3[内核PTY缓冲区]
+            DF4[PTY从端→Shell]
+            DF5[dnbuf智能缓冲]
+            DF6[写入流控制]
+        end
+    end
+    
+    subgraph "错误处理和监控"
+        E1[PTY设备错误检测]
+        E2[Shell进程状态监控]
+        E3[缓冲区溢出保护]
+        E4[网络连接状态检查]
+        E5[EOF信号处理]
+        E6[进程退出清理]
+    end
+    
+    %% PTY创建流程
+    A1 --> A2
+    A2 --> A3
+    A3 --> A4
+    A4 --> B1
+    B1 --> B2
+    B2 --> B3
+    B3 --> B4
+    B4 --> C1
+    C1 --> C2
+    C2 --> C3
+    C3 --> D1
+    D1 --> D2
+    D2 --> D3
+    
+    %% 主端管理
+    D3 --> M1
+    M1 --> M2
+    M2 --> M3
+    M3 --> M4
+    M3 --> M5
+    
+    %% 从端配置
+    D3 --> S1
+    S1 --> S2
+    S2 --> S3
+    S3 --> S4
+    
+    %% 终端配置
+    S3 --> T1
+    T1 --> T2
+    T2 --> T3
+    T3 --> T4
+    T4 --> T5
+    T5 --> T6
+    
+    %% stdio重定向
+    T6 --> R1
+    R1 --> R2
+    R2 --> R3
+    R3 --> R4
+    
+    %% 会话管理
+    R4 --> SE1
+    SE1 --> SE2
+    SE2 --> SE3
+    SE3 --> SE4
+    SE4 --> SE5
+    
+    %% 上行数据流
+    M4 --> U1
+    U1 --> U2
+    U2 --> U3
+    U3 --> U4
+    
+    %% 下行数据流
+    M5 --> D1
+    D1 --> D2
+    D2 --> D3
+    D3 --> D4
+    
+    %% 流控制连接
+    SE5 --> UF1
+    UF1 --> UF2
+    UF2 --> UF3
+    UF3 --> UF4
+    UF4 --> UF5
+    UF5 --> UF6
+    
+    DF1 --> DF2
+    DF2 --> DF3
+    DF3 --> DF4
+    DF4 --> DF5
+    DF5 --> DF6
+    
+    %% 监控连接
+    U1 --> E1
+    D3 --> E2
+    U2 --> E3
+    U4 --> E4
+    UF1 --> E5
+    E5 --> E6
+    
+    %% 样式定义
+    classDef createStage fill:#e1f5fe
+    classDef masterStage fill:#f3e5f5
+    classDef slaveStage fill:#fff3e0
+    classDef configStage fill:#e8f5e8
+    classDef redirectStage fill:#fce4ec
+    classDef sessionStage fill:#f1f8e9
+    classDef flowStage fill:#e0f2f1
+    classDef errorStage fill:#ffebee
+    
+    class A1,A2,A3,A4,B1,B2,B3,B4,C1,C2,C3,D1,D2,D3 createStage
+    class M1,M2,M3,M4,M5,U1,U2,U3,U4,D1,D2,D3,D4 masterStage
+    class S1,S2,S3,S4 slaveStage
+    class T1,T2,T3,T4,T5,T6 configStage
+    class R1,R2,R3,R4 redirectStage
+    class SE1,SE2,SE3,SE4,SE5 sessionStage
+    class UF1,UF2,UF3,UF4,UF5,UF6,DF1,DF2,DF3,DF4,DF5,DF6 flowStage
+    class E1,E2,E3,E4,E5,E6 errorStage 

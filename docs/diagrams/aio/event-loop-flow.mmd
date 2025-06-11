@@ -1,0 +1,88 @@
+flowchart TD
+    Start([系统启动]) --> Init[aio_ini初始化]
+    Init --> InitPool[初始化句柄池<br/>fd=-1标记空闲]
+    InitPool --> InitTimer{是否启用CFG_timerfd?}
+    
+    InitTimer -->|是| CreateTimerFD[创建timerfd<br/>CLOCK_MONOTONIC<br/>TFD_NONBLOCK]
+    InitTimer -->|否| SkipTimerFD[跳过timerfd创建]
+    
+    CreateTimerFD --> LoopEntry[进入aio_loop主循环]
+    SkipTimerFD --> LoopEntry
+    
+    LoopEntry --> LoopStart[开始新循环迭代]
+    LoopStart --> ResetVars[重置变量<br/>maxfd=-1<br/>清空fd_set]
+    
+    ResetVars --> ProcessTimers[rt_processTimerQ<br/>处理定时器队列]
+    ProcessTimers --> TimerMode{定时器模式}
+    
+    TimerMode -->|timerfd模式| SetTimerFD[设置timerfd<br/>绝对时间<br/>加入rdset]
+    TimerMode -->|timeout模式| SetTimeout[设置select超时<br/>相对时间]
+    
+    SetTimerFD --> BuildFDSet[构建文件描述符集合]
+    SetTimeout --> BuildFDSet
+    
+    BuildFDSet --> IterateHandles[遍历AIO句柄池]
+    IterateHandles --> CheckHandle{句柄有效?}
+    
+    CheckHandle -->|否| NextHandle[下一个句柄]
+    CheckHandle -->|是| CheckCallbacks[检查回调函数]
+    
+    CheckCallbacks --> AddToRdSet{有读回调?}
+    AddToRdSet -->|是| SetRdBit[FD_SET到rdset]
+    AddToRdSet -->|否| CheckWrCallback{有写回调?}
+    
+    SetRdBit --> CheckWrCallback
+    CheckWrCallback -->|是| SetWrBit[FD_SET到wrset]
+    CheckWrCallback -->|否| UpdateMaxFD[更新maxfd]
+    
+    SetWrBit --> UpdateMaxFD
+    UpdateMaxFD --> NextHandle
+    NextHandle --> MoreHandles{还有句柄?}
+    
+    MoreHandles -->|是| CheckHandle
+    MoreHandles -->|否| CallSelect[调用select系统调用]
+    
+    CallSelect --> SelectResult{select结果}
+    SelectResult -->|错误EINTR| LoopStart
+    SelectResult -->|错误其他| Error[处理错误]
+    SelectResult -->|成功| ProcessEvents[处理事件]
+    
+    ProcessEvents --> TimerFDCheck{timerfd可读?}
+    TimerFDCheck -->|是| ReadTimerFD[读取timerfd<br/>消费事件]
+    TimerFDCheck -->|否| ProcessIOEvents[处理IO事件]
+    
+    ReadTimerFD --> ProcessTimerExpiry[rt_processTimerQ<br/>处理过期定时器]
+    ProcessTimerExpiry --> DecrementCount[n--]
+    DecrementCount --> ProcessIOEvents
+    
+    ProcessIOEvents --> IterateForIO[遍历句柄处理IO]
+    IterateForIO --> CheckIOHandle{句柄有效且n>0?}
+    
+    CheckIOHandle -->|否| NextIOHandle[下一个句柄]
+    CheckIOHandle -->|是| CheckReadEvent{FD_ISSET读事件?}
+    
+    CheckReadEvent -->|是| CallReadCallback[调用读回调<br/>aio->rdfn(aio)]
+    CheckReadEvent -->|否| CheckWriteEvent{FD_ISSET写事件?}
+    
+    CallReadCallback --> DecrementN1[n--]
+    DecrementN1 --> CheckWriteEvent
+    
+    CheckWriteEvent -->|是| CallWriteCallback[调用写回调<br/>aio->wrfn(aio)]
+    CheckWriteEvent -->|否| NextIOHandle
+    
+    CallWriteCallback --> DecrementN2[n--]
+    DecrementN2 --> NextIOHandle
+    NextIOHandle --> MoreIOHandles{还有句柄且n>0?}
+    
+    MoreIOHandles -->|是| CheckIOHandle
+    MoreIOHandles -->|否| LoopStart
+    
+    Error --> ErrorLog[记录错误日志]
+    ErrorLog --> LoopStart
+    
+    style Start fill:#c8e6c9
+    style Init fill:#e1f5fe
+    style LoopEntry fill:#fff3e0
+    style CallSelect fill:#fce4ec
+    style ProcessEvents fill:#f3e5f5
+    style Error fill:#ffcdd2 

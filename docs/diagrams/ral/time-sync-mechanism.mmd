@@ -1,0 +1,103 @@
+flowchart TD
+    START["时间同步触发<br/>synctime() 定时器"] --> GET_SYNC["调用 ral_getTimesync()<br/>获取时间同步测量"]
+    
+    subgraph SYNC_MEASURE ["时间同步测量过程"]
+        GET_SYNC --> PPS_CHECK{"检查PPS使能<br/>pps_en？"}
+        
+        PPS_CHECK -->|是| PPS_READ["读取PPS锁存值<br/>lgw_get_trigcnt(&pps_xticks)"]
+        PPS_READ --> PPS_DISABLE["临时禁用PPS锁存<br/>lgw_reg_w(LGW_GPS_EN, 0)"]
+        
+        PPS_CHECK -->|否| TIME_START
+        PPS_DISABLE --> TIME_START
+        
+        TIME_START["记录测量开始时间<br/>ustime_t t0 = rt_getTime()"]
+        
+        TIME_START --> READ_XTICKS["读取硬件计数器<br/>lgw_get_trigcnt(&xticks)"]
+        
+        READ_XTICKS --> TIME_END["记录测量结束时间<br/>ustime_t t1 = rt_getTime()"]
+        
+        TIME_END --> CALC_DELTA["计算硬件时间差<br/>sL_t d = (s4_t)(xticks - *last_xtime)"]
+        
+        CALC_DELTA --> CHECK_ROLLOVER{"检查时间回卷<br/>d < 0？"}
+        
+        CHECK_ROLLOVER -->|是| FIX_ROLLOVER["修正32位溢出<br/>d += (sL_t)1<<32<br/>记录CRITICAL错误"]
+        CHECK_ROLLOVER -->|否| UPDATE_XTIME
+        FIX_ROLLOVER --> UPDATE_XTIME
+        
+        UPDATE_XTIME["更新连续64位时间<br/>timesync->xtime = *last_xtime += d<br/>timesync->ustime = (t0+t1)/2"]
+        
+        UPDATE_XTIME --> PPS_PROCESS{"PPS后处理<br/>pps_en？"}
+        
+        PPS_PROCESS -->|是| PPS_ENABLE["重新启用PPS锁存<br/>lgw_reg_w(LGW_GPS_EN, 1)"]
+        PPS_ENABLE --> PPS_VALIDATE["验证PPS数据<br/>pps_xticks != 0 且<br/>last_pps_xticks != pps_xticks？"]
+        
+        PPS_VALIDATE -->|是| PPS_CALC["计算PPS对应xtime<br/>timesync->pps_xtime = <br/>timesync->xtime + (s4_t)(pps_xticks - xticks)"]
+        PPS_VALIDATE -->|否| PPS_INVALID["PPS无效<br/>timesync->pps_xtime = 0"]
+        
+        PPS_CALC --> QUALITY_CALC
+        PPS_INVALID --> QUALITY_CALC
+        PPS_PROCESS -->|否| PPS_NONE["无PPS<br/>timesync->pps_xtime = 0"]
+        PPS_NONE --> QUALITY_CALC
+        
+        QUALITY_CALC["计算测量质量<br/>quality = (int)(t1-t0)<br/>值越小质量越好"]
+    end
+    
+    QUALITY_CALC --> UPDATE_TIMESYNC["调用 ts_updateTimesync()<br/>更新时间同步状态"]
+    
+    subgraph TS_UPDATE ["时间同步状态更新"]
+        UPDATE_TIMESYNC --> RECORD_QUALITY["记录质量数据<br/>syncQual[syncQual_widx] = quality"]
+        
+        RECORD_QUALITY --> CHECK_THRESHOLD{"质量阈值检查<br/>abs(quality) > syncQual_thres？"}
+        
+        CHECK_THRESHOLD -->|是| REJECT_SYNC["拒绝时间同步<br/>记录 VERBOSE 日志<br/>返回 TIMESYNC_RADIO_INTV"]
+        
+        CHECK_THRESHOLD -->|否| ACCEPT_SYNC["接受时间同步<br/>更新时间戳映射<br/>计算时钟漂移"]
+        
+        ACCEPT_SYNC --> CALC_DRIFT["计算时钟漂移<br/>drift_ppm = dus/dxc<br/>更新漂移统计"]
+        
+        CALC_DRIFT --> RETURN_DELAY["返回下次同步延迟<br/>基于同步质量动态调整"]
+    end
+    
+    RETURN_DELAY --> SET_TIMER["设置下次同步定时器<br/>rt_setTimer(&syncTmr, delay)"]
+    
+    REJECT_SYNC --> SET_TIMER
+    
+    SET_TIMER --> END["等待下次同步触发"]
+    
+    subgraph PPS_FEATURES ["PPS功能特性"]
+        PPS_GPS["GPS PPS信号<br/>每秒精确脉冲"]
+        PPS_LATCH["硬件PPS锁存<br/>记录脉冲到达时间"]
+        PPS_SYNC["PPS时间同步<br/>校准本地时钟"]
+    end
+    
+    subgraph SYNC_QUALITY ["同步质量管理"]
+        QUAL_HIST["质量历史记录<br/>N_SYNC_QUAL个测量"]
+        QUAL_SORT["质量排序分析<br/>计算阈值"]
+        QUAL_FILTER["质量过滤<br/>丢弃低质量测量"]
+    end
+    
+    subgraph CLOCK_DRIFT ["时钟漂移跟踪"]
+        DRIFT_MCU["MCU时钟漂移<br/>相对于硬件时钟"]
+        DRIFT_PPM["漂移率(PPM)<br/>百万分之一精度"]
+        DRIFT_COMP["漂移补偿<br/>长期时间校准"]
+    end
+    
+    %% 连接关系
+    GET_SYNC -.-> PPS_FEATURES
+    UPDATE_TIMESYNC -.-> SYNC_QUALITY
+    CALC_DRIFT -.-> CLOCK_DRIFT
+    
+    %% 样式定义
+    classDef startEnd fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    classDef process fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef decision fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef pps fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef quality fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef drift fill:#ffebee,stroke:#c62828,stroke-width:2px
+    
+    class START,END startEnd
+    class PPS_READ,PPS_DISABLE,PPS_ENABLE,TIME_START,TIME_END,READ_XTICKS,CALC_DELTA,UPDATE_XTIME,PPS_CALC,PPS_INVALID,PPS_NONE,QUALITY_CALC,RECORD_QUALITY,ACCEPT_SYNC,CALC_DRIFT,RETURN_DELAY,SET_TIMER,FIX_ROLLOVER process
+    class PPS_CHECK,CHECK_ROLLOVER,PPS_PROCESS,PPS_VALIDATE,CHECK_THRESHOLD decision
+    class PPS_GPS,PPS_LATCH,PPS_SYNC pps
+    class QUAL_HIST,QUAL_SORT,QUAL_FILTER,REJECT_SYNC quality
+    class DRIFT_MCU,DRIFT_PPM,DRIFT_COMP drift 

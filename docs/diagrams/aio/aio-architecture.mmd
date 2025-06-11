@@ -1,0 +1,50 @@
+graph TD
+    A["AIO异步IO系统<br/>核心事件循环"] --> B["定时器集成"]
+    A --> C["IO多路复用"]
+    A --> D["事件分发"]
+    A --> E["回调管理"]
+
+    B --> B1["timerfd模式<br/>CFG_timerfd"]
+    B --> B2["传统timeout模式<br/>select超时"]
+    B1 --> B11["高精度内核定时器<br/>CLOCK_MONOTONIC"]
+    B1 --> B12["绝对时间设置<br/>TFD_TIMER_ABSTIME"]
+    B2 --> B21["microsecond精度<br/>timeval结构"]
+    B2 --> B22["相对时间等待<br/>select timeout"]
+
+    C --> C1["select系统调用<br/>阻塞等待"]
+    C --> C2["fd_set构建<br/>读写分离"]
+    C --> C3["最大fd管理<br/>动态计算"]
+    C1 --> C11["EINTR重试机制<br/>信号处理"]
+    C2 --> C21["读事件集合<br/>rdset"]
+    C2 --> C22["写事件集合<br/>wrset"]
+
+    D --> D1["IO事件处理"]
+    D --> D2["定时器事件处理"]
+    D1 --> D11["读回调执行<br/>rdfn(aio)"]
+    D1 --> D12["写回调执行<br/>wrfn(aio)"]
+    D2 --> D21["timerfd读取<br/>消费事件"]
+    D2 --> D22["定时器队列处理<br/>rt_processTimerQ"]
+
+    E --> E1["句柄池管理<br/>10个并发对象"]
+    E --> E2["回调函数设置<br/>动态修改"]
+    E --> E3["生命周期管理<br/>open/close"]
+    E1 --> E11["线性搜索分配<br/>简单高效"]
+    E1 --> E12["上下文关联<br/>void* ctx"]
+    E2 --> E21["读回调设置<br/>aio_set_rdfn"]
+    E2 --> E22["写回调设置<br/>aio_set_wrfn"]
+
+    F["外部调用者"] --> F1["网络层<br/>WebSocket/HTTP"]
+    F --> F2["进程通信<br/>pipe/FIFO"]
+    F --> F3["串口通信<br/>GPS/调试"]
+    F --> F4["文件IO<br/>日志/配置"]
+
+    F1 --> A
+    F2 --> A
+    F3 --> A
+    F4 --> A
+
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style C fill:#e8f5e8
+    style D fill:#fff3e0
+    style E fill:#fce4ec 

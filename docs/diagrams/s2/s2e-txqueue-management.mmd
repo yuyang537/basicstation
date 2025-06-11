@@ -1,0 +1,54 @@
+flowchart TD
+    A["s2e_addTxjob()<br/>添加发送任务到队列"] --> B{是否为重新调度?}
+    
+    B -->|否：新任务| C["检查时间限制<br/>- 计算最早发送时间<br/>- 检查是否超前<br/>- 获取备选天线"]
+    B -->|是：重新调度| D["check_alt:<br/>备选天线检查"]
+    
+    C --> E{发送时间是否合适?}
+    E -->|否| F["altTxTime()<br/>寻找备选发送时间<br/>- Class C: 退避重试<br/>- Class B: 无备选<br/>- Class A: RX1→RX2"]
+    F --> G{找到备选时间?}
+    G -->|否| H["丢弃任务"]
+    G -->|是| I["start: 发送单元处理"]
+    E -->|是| I
+    
+    D --> J{还有备选天线?}
+    J -->|否| F
+    J -->|是| K["选择下一个天线<br/>更新altAnts掩码"]
+    K --> I
+    
+    I --> L["占空比检查<br/>canTx()"]
+    L --> M{占空比允许?}
+    M -->|否| D
+    
+    M -->|是| N["检查与正在发送的冲突<br/>TXFLAG_TXING"]
+    N --> O{有冲突?}
+    O -->|是| D
+    
+    O -->|否| P["按发送时间排序插入队列<br/>遍历链表找到插入位置"]
+    P --> Q{是否成为队列头?}
+    Q -->|是| R["重启定时器<br/>rt_yieldTo(s2e_txtimeout)"]
+    Q -->|否| S["插入成功"]
+    R --> S
+    
+    T["s2e_nextTxAction()<br/>发送状态机"] --> U{队列是否为空?}
+    U -->|是| V["返回USTIME_MAX<br/>无需调度"]
+    U -->|否| W["获取队列头任务"]
+    
+    W --> X{任务是否在发送中?}
+    X -->|是| Y["检查发送状态<br/>- 发送完成: 清理任务<br/>- 仍在发送: 等待结束<br/>- 发送失败: 寻找备选"]
+    Y --> Z["返回下次检查时间"]
+    
+    X -->|否| AA["检查发送时机<br/>- 计算时间差<br/>- 更新扩展时间<br/>- 检查占空比<br/>- 提交到无线电"]
+    AA --> BB{发送成功启动?}
+    BB -->|是| CC["标记TXFLAG_TXING<br/>处理冲突的后续任务"]
+    BB -->|否| DD["寻找备选天线/时间"]
+    CC --> Z
+    DD --> Z
+    
+    EE["s2e_txtimeout()<br/>定时器回调"] --> T
+    
+    style A fill:#e1f5fe
+    style T fill:#f3e5f5
+    style EE fill:#fff3e0
+    style H fill:#ffebee
+    style S fill:#e8f5e8 

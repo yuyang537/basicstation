@@ -1,0 +1,92 @@
+graph TB
+    subgraph "时间域 (Time Domains)"
+        MCU[MCU系统时间<br/>ustime_t<br/>rt_getTime()]
+        SX130X[SX130X芯片时间<br/>xtime<br/>32MHz计数器]
+        GPS[GPS时间<br/>gpstime<br/>GPS纪元秒数]
+        UTC[UTC时间<br/>rt_ustime2utc<br/>UNIX时间戳]
+        PPS[PPS脉冲<br/>每秒精确信号<br/>同步基准]
+    end
+    
+    subgraph "时间同步管理 (timesync.c)"
+        TS_INIT[ts_iniTimesync<br/>初始化时间同步]
+        TS_UPDATE[ts_updateTimesync<br/>MCU-SX130X同步]
+        TS_REPORT[timesyncReport<br/>状态报告]
+        
+        subgraph "漂移控制"
+            DRIFT_STATS[漂移统计分析<br/>drift_stats]
+            DRIFT_PPM[ppm编解码<br/>encodeDriftPPM<br/>decodeDriftPPM]
+            NORMALIZE[时间标准化<br/>ts_normalizeTimespanMCU]
+        end
+        
+        subgraph "PPS处理"
+            PPS_SYNC[PPS同步状态<br/>ppsSync]
+            PPS_OFFSET[PPS偏移<br/>ppsOffset]
+            PPS_DRIFT[PPS漂移分析<br/>pps_drifts]
+        end
+        
+        subgraph "LNS同步"
+            LNS_TIMER[LNS同步定时器<br/>onTimesyncLns]
+            LNS_PROCESS[处理LNS响应<br/>ts_processTimesyncLns]
+            GPS_OFFSET[GPS偏移<br/>gpsOffset]
+        end
+    end
+    
+    subgraph "时间转换服务 (Time Conversion APIs)"
+        CONV_GPS2X[ts_gpstime2xtime<br/>GPS→SX130X]
+        CONV_X2GPS[ts_xtime2gpstime<br/>SX130X→GPS]
+        CONV_US2X[ts_ustime2xtime<br/>MCU→SX130X]
+        CONV_X2US[ts_xtime2ustime<br/>SX130X→MCU]
+        CONV_X2X[ts_xtime2xtime<br/>SX130X间转换]
+        CONV_XTICKS[ts_xticks2xtime<br/>32bit→64bit扩展]
+    end
+    
+    subgraph "时间同步状态 (Sync States)"
+        SYNC_QUAL[同步质量控制<br/>syncQual[]]
+        UNIT_STATS[发送单元统计<br/>txunit_stats[]]
+        TIMESYNCS[时间同步状态<br/>timesyncs[]]
+        SESSION[会话管理<br/>ts_newXtimeSession]
+    end
+    
+    %% 时间域关系
+    MCU -.->|晶振漂移| SX130X
+    SX130X -.->|计数器| MCU
+    PPS -->|1Hz基准| GPS
+    GPS -.->|UTC+闰秒| UTC
+    
+    %% 同步管理
+    TS_INIT --> TIMESYNCS
+    TS_UPDATE --> DRIFT_STATS
+    TS_UPDATE --> PPS_SYNC
+    DRIFT_STATS --> NORMALIZE
+    
+    %% PPS处理流程
+    PPS --> PPS_SYNC
+    PPS_SYNC --> PPS_OFFSET
+    PPS_OFFSET --> LNS_TIMER
+    
+    %% LNS同步流程
+    LNS_TIMER --> LNS_PROCESS
+    LNS_PROCESS --> GPS_OFFSET
+    GPS_OFFSET --> CONV_GPS2X
+    
+    %% 转换服务
+    TIMESYNCS --> CONV_US2X
+    TIMESYNCS --> CONV_X2US
+    TIMESYNCS --> CONV_X2X
+    PPS_SYNC --> CONV_GPS2X
+    PPS_SYNC --> CONV_X2GPS
+    
+    %% 状态管理
+    SYNC_QUAL --> TS_UPDATE
+    UNIT_STATS --> DRIFT_PPM
+    SESSION --> CONV_XTICKS
+    
+    classDef timeClass fill:#e3f2fd
+    classDef syncClass fill:#f1f8e9
+    classDef convertClass fill:#fff8e1
+    classDef stateClass fill:#fce4ec
+    
+    class MCU,SX130X,GPS,UTC,PPS timeClass
+    class TS_INIT,TS_UPDATE,TS_REPORT,DRIFT_STATS,DRIFT_PPM,NORMALIZE,PPS_SYNC,PPS_OFFSET,PPS_DRIFT,LNS_TIMER,LNS_PROCESS,GPS_OFFSET syncClass
+    class CONV_GPS2X,CONV_X2GPS,CONV_US2X,CONV_X2US,CONV_X2X,CONV_XTICKS convertClass
+    class SYNC_QUAL,UNIT_STATS,TIMESYNCS,SESSION stateClass 

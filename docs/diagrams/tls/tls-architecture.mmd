@@ -1,0 +1,43 @@
+graph TB
+    subgraph "应用层"
+        APP[应用模块<br/>TC/HTTP/WS]
+    end
+    
+    subgraph "TLS安全层 (tls.c)"
+        CONF[TLS配置管理<br/>tls_makeConf]
+        SESSION[会话管理<br/>tls_makeSession]
+        CERT[证书管理<br/>_readCAs]
+        RNG[随机数生成<br/>tls_random]
+        IO[数据传输<br/>tls_read/write]
+        ERR[错误处理<br/>log_mbedError]
+    end
+    
+    subgraph "mbedTLS库"
+        SSL[SSL协议栈]
+        X509[X.509证书]
+        CRYPTO[密码学原语]
+    end
+    
+    subgraph "系统服务"
+        SYS[系统服务<br/>文件/内存/日志]
+        NET[网络层<br/>TCP套接字]
+    end
+    
+    APP --> CONF
+    APP --> SESSION
+    APP --> IO
+    
+    CONF --> CERT
+    CONF --> RNG
+    SESSION --> IO
+    CERT --> SSL
+    RNG --> SSL
+    IO --> SSL
+    ERR --> SYS
+    
+    SSL --> X509
+    SSL --> CRYPTO
+    
+    CERT --> SYS
+    RNG --> SYS
+    IO --> NET

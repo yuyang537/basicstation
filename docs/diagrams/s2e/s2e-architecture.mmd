@@ -1,0 +1,85 @@
+graph TD
+    A["LoRa设备<br/>终端节点"] -->|上行数据| B["无线电层<br/>RAL"]
+    B --> C["S2E接收处理<br/>RX Part"]
+    
+    C --> D["s2e_addRxjob()<br/>添加接收任务"]
+    D --> E["镜像帧检测<br/>信号质量评估"]
+    E --> F["接收队列<br/>RXQ"]
+    F --> G["s2e_flushRxjobs()<br/>刷新接收队列"]
+    G --> H["JSON编码<br/>LoRa帧解析"]
+    H --> I["WebSocket<br/>发送到LNS"]
+    
+    I -->|下行数据| J["LNS网络服务器<br/>LoRaWAN Network Server"]
+    J -->|下行消息| K["S2E消息处理<br/>Message Handling"]
+    
+    K --> L["s2e_onMsg()<br/>消息分发入口"]
+    L --> M{"消息类型判断"}
+    
+    M -->|router_config| N["handle_router_config()<br/>区域配置处理"]
+    M -->|dnframe| O["handle_dnframe()<br/>下行帧处理"]
+    M -->|dnmsg| P["handle_dnmsg()<br/>下行消息处理"]
+    M -->|dnsched| Q["handle_dnsched()<br/>下行调度处理"]
+    M -->|timesync| R["handle_timesync()<br/>时间同步处理"]
+    
+    N --> S["区域参数配置<br/>频率计划<br/>数据速率定义"]
+    O --> T["s2e_addTxjob()<br/>添加发送任务"]
+    P --> T
+    Q --> T
+    
+    T --> U["发送队列<br/>TXQ"]
+    U --> V["s2e_nextTxAction()<br/>发送调度引擎"]
+    
+    V --> W{"发送许可检查"}
+    W -->|占空比检查| X["s2e_canTxEU868()<br/>EU868频段检查"]
+    W -->|信道检查| Y["s2e_canTxPerChnlDC()<br/>每信道占空比检查"]
+    W -->|CCA检查| Z["载波侦听<br/>Clear Channel Assessment"]
+    
+    X --> AA["发送状态机<br/>TX State Machine"]
+    Y --> AA
+    Z --> AA
+    
+    AA --> BB["空中时间计算<br/>_calcAirTime()"]
+    BB --> CC["功率计算<br/>calcTxpow()"]
+    CC --> DD["无线电层发送<br/>ral_tx()"]
+    DD --> EE["发送确认<br/>send_dntxed()"]
+    EE --> FF["占空比更新<br/>update_DC()"]
+    
+    FF --> GG["LoRa设备<br/>终端节点"]
+    
+    % 辅助功能模块
+    HH["时间同步模块<br/>Timesync"] --> C
+    HH --> V
+    
+    II["占空比控制<br/>Duty Cycle Control"] --> V
+    II --> FF
+    
+    JJ["功率管理<br/>Power Management"] --> CC
+    
+    KK["信道管理<br/>Channel Management"] --> S
+    KK --> V
+    
+    % 配置和状态
+    LL["S2E上下文<br/>s2ctx_t"] --> C
+    LL --> K
+    LL --> V
+    
+    MM["全局配置<br/>s2e_dcDisabled<br/>s2e_ccaDisabled<br/>s2e_dwellDisabled"] --> W
+    
+    % 样式设置
+    style A fill:#e1f5fe
+    style J fill:#e1f5fe
+    style GG fill:#e1f5fe
+    
+    style C fill:#f3e5f5
+    style K fill:#f3e5f5
+    style V fill:#f3e5f5
+    
+    style F fill:#fff3e0
+    style U fill:#fff3e0
+    
+    style BB fill:#e8f5e8
+    style CC fill:#e8f5e8
+    style II fill:#e8f5e8
+    
+    style LL fill:#fce4ec
+    style MM fill:#fce4ec 

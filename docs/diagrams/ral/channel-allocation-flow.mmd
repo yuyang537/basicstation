@@ -1,0 +1,96 @@
+flowchart TD
+    START["开始信道分配<br/>ral_challoc()"] --> INIT["初始化状态变量<br/>• modem_idx = 0<br/>• chip_idx = 0<br/>• multi_chslot = 0<br/>• fsk_chslot = 0<br/>• fl_chslot = 0"]
+    
+    INIT --> INIT_RFE["初始化RFF频率跨度数组<br/>rfe_spans[MAX_130X*2*2]<br/>每个芯片2个RFF，每个RFF记录[min,max]频率"]
+    
+    INIT_RFE --> CALLBACK_START["回调通知开始分配<br/>alloc_cb(ctx, NULL, CHALLOC_START)"]
+    
+    CALLBACK_START --> CHIP_LOOP{"芯片循环<br/>chip_idx < MAX_130X<br/>且还有未分配信道？"}
+    
+    CHIP_LOOP -->|是| CALLBACK_CHIP_START["回调通知芯片开始<br/>alloc_cb(ctx, chip_info, CHALLOC_CHIP_START)"]
+    
+    CALLBACK_CHIP_START --> PHASE1["第一阶段：分配125kHz LoRa信道"]
+    
+    subgraph PHASE1_DETAIL ["125kHz LoRa信道分配详情"]
+        PHASE1 --> RESET_MODEM["重置 modem_idx = 0"]
+        RESET_MODEM --> LORA125_LOOP{"125kHz信道循环<br/>multi_chslot < MAX_UPCHNLS<br/>且 modem_idx < IF_NB-2？"}
+        
+        LORA125_LOOP -->|是| CHECK_125["检查信道类型<br/>是否为125kHz LoRa？"]
+        CHECK_125 -->|否| SKIP_125["multi_chslot++<br/>跳过此信道"]
+        SKIP_125 --> LORA125_LOOP
+        
+        CHECK_125 -->|是| TRY_RFF_125["尝试2个RFF<br/>寻找合适位置"]
+        TRY_RFF_125 --> CHECK_RFF_125{"RFF频率范围检查<br/>(ch_freq - rfe_span[0])/2<br/>≤ MAXCOFF_125？"}
+        
+        CHECK_RFF_125 -->|是| ALLOC_125["分配125kHz信道<br/>• 更新RFF频率跨度<br/>• 回调通知分配成功<br/>• modem_idx++<br/>• multi_chslot++"]
+        CHECK_RFF_125 -->|否| NEXT_RFF_125["尝试下一个RFF"]
+        NEXT_RFF_125 --> TRY_RFF_125
+        
+        ALLOC_125 --> LORA125_LOOP
+        LORA125_LOOP -->|否| PHASE2
+    end
+    
+    PHASE2["第二阶段：分配FSK信道"]
+    
+    subgraph PHASE2_DETAIL ["FSK信道分配详情"]
+        PHASE2 --> FSK_LOOP{"FSK信道循环<br/>fsk_chslot < MAX_UPCHNLS？"}
+        
+        FSK_LOOP -->|是| CHECK_FSK["检查信道类型<br/>是否为FSK？"]
+        CHECK_FSK -->|否| SKIP_FSK["fsk_chslot++<br/>跳过此信道"]
+        SKIP_FSK --> FSK_LOOP
+        
+        CHECK_FSK -->|是| TRY_RFF_FSK["尝试2个RFF<br/>寻找合适位置"]
+        TRY_RFF_FSK --> CHECK_RFF_FSK{"RFF频率范围检查<br/>FSK容忍度较大<br/>±2*MAXCOFF_125？"}
+        
+        CHECK_RFF_FSK -->|是| ALLOC_FSK["分配FSK信道<br/>• 使用IF_NB-1调制解调器<br/>• 更新RFF频率跨度<br/>• 回调通知分配成功<br/>• fsk_chslot++<br/>• modem_idx++"]
+        CHECK_RFF_FSK -->|否| NEXT_RFF_FSK["尝试下一个RFF"]
+        NEXT_RFF_FSK --> TRY_RFF_FSK
+        
+        ALLOC_FSK --> FSK_BREAK["跳出FSK循环<br/>每芯片只分配一个FSK"]
+        FSK_LOOP -->|否| PHASE3
+        FSK_BREAK --> PHASE3
+    end
+    
+    PHASE3["第三阶段：分配快速LoRa信道(250/500kHz)"]
+    
+    subgraph PHASE3_DETAIL ["快速LoRa信道分配详情"]
+        PHASE3 --> FL_LOOP{"快速LoRa信道循环<br/>fl_chslot < MAX_UPCHNLS？"}
+        
+        FL_LOOP -->|是| CHECK_FL["检查信道类型<br/>是否为250/500kHz LoRa？"]
+        CHECK_FL -->|否| SKIP_FL["fl_chslot++<br/>跳过此信道"]
+        SKIP_FL --> FL_LOOP
+        
+        CHECK_FL -->|是| CALC_MAXCOFF["计算最大频率偏移<br/>BW250: MAXCOFF_250<br/>BW500: MAXCOFF_500"]
+        CALC_MAXCOFF --> TRY_RFF_FL["尝试2个RFF<br/>寻找合适位置"]
+        TRY_RFF_FL --> CHECK_RFF_FL{"RFF频率范围检查<br/>考虑带宽需求<br/>ch_freq ∈ [cmin-maxcoff, cmax+maxcoff]？"}
+        
+        CHECK_RFF_FL -->|是| ALLOC_FL["分配快速LoRa信道<br/>• 使用IF_NB-2调制解调器<br/>• 优化RFF中心频率<br/>• 更新频率跨度<br/>• 回调通知分配成功<br/>• fl_chslot++<br/>• modem_idx++"]
+        CHECK_RFF_FL -->|否| NEXT_RFF_FL["尝试下一个RFF"]
+        NEXT_RFF_FL --> TRY_RFF_FL
+        
+        ALLOC_FL --> FL_BREAK["跳出快速LoRa循环<br/>每芯片只分配一个快速LoRa"]
+        FL_LOOP -->|否| CHIP_DONE
+        FL_BREAK --> CHIP_DONE
+    end
+    
+    CHIP_DONE["芯片分配完成"] --> CALLBACK_CHIP_DONE["回调通知芯片完成<br/>alloc_cb(ctx, chip_stats, CHALLOC_CHIP_DONE)<br/>包含：chipid, chans, minFreq, maxFreq"]
+    
+    CALLBACK_CHIP_DONE --> NEXT_CHIP["chip_idx++<br/>移动到下一个芯片"]
+    NEXT_CHIP --> CHIP_LOOP
+    
+    CHIP_LOOP -->|否| CALLBACK_DONE["回调通知分配完成<br/>alloc_cb(ctx, NULL, CHALLOC_DONE)"]
+    
+    CALLBACK_DONE --> RETURN["返回成功<br/>return 1"]
+    
+    %% 样式定义
+    classDef startEnd fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    classDef process fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef decision fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef phase fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef callback fill:#ffebee,stroke:#c62828,stroke-width:2px
+    
+    class START,RETURN startEnd
+    class INIT,INIT_RFE,RESET_MODEM,ALLOC_125,ALLOC_FSK,ALLOC_FL,CALC_MAXCOFF,NEXT_CHIP,SKIP_125,SKIP_FSK,SKIP_FL process
+    class CHIP_LOOP,LORA125_LOOP,CHECK_125,CHECK_RFF_125,FSK_LOOP,CHECK_FSK,CHECK_RFF_FSK,FL_LOOP,CHECK_FL,CHECK_RFF_FL decision
+    class PHASE1,PHASE2,PHASE3,CHIP_DONE phase
+    class CALLBACK_START,CALLBACK_CHIP_START,CALLBACK_CHIP_DONE,CALLBACK_DONE callback 

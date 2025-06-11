@@ -1,0 +1,69 @@
+graph TD
+    A[altTxTime备选时间算法] --> B{检查设备类型}
+    
+    B -->|TXFLAG_CLSC| C[Class C设备处理]
+    B -->|TXFLAG_PING| D[Class B设备处理]
+    B -->|默认| E[Class A设备处理]
+    
+    C --> F{是否有RX2频率?}
+    F -->|有rx2freq| G[切换到RX2窗口]
+    F -->|无rx2freq| H{重试次数检查}
+    
+    G --> I[设置参数:<br/>- txtime = earliest - backoff<br/>- freq = rx2freq<br/>- dr = rx2dr<br/>- retries = 0]
+    I --> J[转换时间戳:<br/>ts_ustime2xtime]
+    J --> K{时间同步检查}
+    K -->|xtime == 0| L[时间同步失败<br/>返回0]
+    K -->|xtime有效| M[RX2切换成功<br/>返回1]
+    
+    H -->|retries > MAX| N[重试次数超限<br/>返回0]
+    H -->|retries <= MAX| O[执行退避策略]
+    
+    O --> P[增加重试计数<br/>retries += 1]
+    P --> Q[推迟发送时间<br/>txtime += BACKOFF_BY<br/>xtime += BACKOFF_BY]
+    Q --> R{时间检查}
+    R -->|txtime < earliest| H
+    R -->|txtime >= earliest| S[退避成功<br/>返回1]
+    
+    D --> T[Class B Ping处理]
+    T --> U[服务器只提供一个时隙<br/>无备选时间<br/>返回0]
+    
+    E --> V{是否有RX2频率?}
+    V -->|rx2freq == 0| W[无更多备选时间<br/>返回0]
+    V -->|有rx2freq| X[切换到RX2窗口]
+    
+    X --> Y[设置RX2参数:<br/>- freq = rx2freq<br/>- dr = rx2dr<br/>- dnchnl = dnchnl2]
+    Y --> Z[推迟1秒:<br/>txtime += 1s<br/>xtime += 1s]
+    Z --> AA[使RX2无效:<br/>rx2freq = 0]
+    AA --> BB[updateAirtimeTxpow<br/>重新计算参数]
+    BB --> CC{时间检查}
+    CC -->|txtime < earliest| DD[RX2时间太晚<br/>返回0]
+    CC -->|txtime >= earliest| EE[RX2切换成功<br/>返回1]
+    
+    subgraph "Class C特点"
+        FF[连续监听<br/>灵活的发送时机<br/>支持多次重试]
+    end
+    
+    subgraph "Class A特点"
+        GG[固定RX窗口<br/>RX1后1秒RX2<br/>仅一次备选机会]
+    end
+    
+    subgraph "Class B特点"
+        HH[固定Ping时隙<br/>服务器控制时间<br/>无备选时间]
+    end
+    
+    subgraph "时间常量"
+        II[CLASS_C_BACKOFF_BY<br/>CLASS_C_BACKOFF_MAX<br/>RX2延迟: 1秒]
+    end
+    
+    style A fill:#e1f5fe
+    style M fill:#c8e6c9
+    style S fill:#c8e6c9
+    style EE fill:#c8e6c9
+    style L fill:#ffcdd2
+    style N fill:#ffcdd2
+    style U fill:#ffcdd2
+    style W fill:#ffcdd2
+    style DD fill:#ffcdd2
+    style C fill:#fff3e0
+    style D fill:#fff3e0
+    style E fill:#fff3e0 

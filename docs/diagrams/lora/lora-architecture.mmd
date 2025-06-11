@@ -1,0 +1,83 @@
+graph TB
+    subgraph "LoRaWAN协议解析架构"
+        subgraph "输入层"
+            A[原始LoRaWAN帧数据] --> B[s2e_parse_lora_frame]
+            A1[帧长度检查] --> B
+            A2[二进制数据流] --> B
+        end
+        
+        subgraph "协议识别层"
+            B --> C{帧类型识别}
+            C --> D[MHDR字段解析]
+            D --> E[帧类型提取<br/>bits 7-5]
+            E --> F[协议版本检查<br/>bits 1-0]
+            F --> G[预留位验证<br/>bits 4-2]
+        end
+        
+        subgraph "帧类型分支处理"
+            C --> H[Join Request/Rejoin<br/>0x00/0xC0]
+            C --> I[Join Accept<br/>0x20] 
+            C --> J[Data Frames<br/>0x40/0x60/0x80/0xA0]
+            C --> K[Proprietary<br/>0xE0]
+        end
+        
+        subgraph "Join帧处理流程"
+            H --> L[固定长度检查<br/>23字节]
+            L --> M[字段提取]
+            M --> N[JoinEUI提取<br/>8字节小端序]
+            M --> O[DevEUI提取<br/>8字节小端序]
+            M --> P[DevNonce提取<br/>2字节小端序]
+            M --> Q[MIC提取<br/>4字节小端序]
+        end
+        
+        subgraph "Data帧处理流程"
+            J --> R[可变长度检查]
+            R --> S[字段提取]
+            S --> T[DevAddr提取<br/>4字节小端序]
+            S --> U[FCtrl提取<br/>1字节]
+            S --> V[FCnt提取<br/>2字节小端序] 
+            S --> W[FOpts提取<br/>0-15字节]
+            S --> X[FPort提取<br/>0-1字节]
+            S --> Y[载荷提取<br/>可变长度]
+            S --> Z[MIC提取<br/>4字节小端序]
+        end
+        
+        subgraph "设备过滤系统"
+            N --> AA{JoinEUI过滤器}
+            AA --> AB[范围检查<br/>min-max对]
+            AB --> AC[过滤决策]
+            T --> AD{NetID过滤器}
+            AD --> AE[位掩码检查<br/>32位数组]
+            AE --> AF[过滤决策]
+        end
+        
+        subgraph "输出格式化层"
+            AC --> AG[JSON编码器<br/>uj_encKVn]
+            AF --> AG
+            I --> AG
+            K --> AG
+            AG --> AH[JSON格式输出]
+            AG --> AI[日志格式输出<br/>xprintf]
+        end
+        
+        subgraph "信标生成系统"
+            BA[s2e_make_beacon] --> BB[GPS时间处理]
+            BB --> BC[地理坐标转换]
+            BC --> BD[CRC计算<br/>crc16_no_table]
+            BD --> BE[信标帧输出]
+        end
+    end
+
+    classDef inputLayer fill:#e1f5fe
+    classDef protocolLayer fill:#fff3e0  
+    classDef processLayer fill:#f3e5f5
+    classDef filterLayer fill:#e8f5e8
+    classDef outputLayer fill:#fff8e1
+    classDef beaconLayer fill:#fce4ec
+
+    class A,A1,A2 inputLayer
+    class B,C,D,E,F,G protocolLayer
+    class H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z processLayer
+    class AA,AB,AC,AD,AE,AF filterLayer
+    class AG,AH,AI outputLayer
+    class BA,BB,BC,BD,BE beaconLayer 

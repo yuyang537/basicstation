@@ -1,0 +1,118 @@
+graph TB
+    %% BasicStation日志系统架构图
+    
+    subgraph "应用层调用"
+        APP[应用程序]
+        LOG_CALLS["LOG(MOD_XXX|LEVEL, fmt, ...)"]
+        HAL_CALLS["log_hal(level, fmt, ...)"]
+        PRINTF["printf/fprintf/stdout"]
+    end
+    
+    subgraph "通用日志模块 (log.c)"
+        LOG_MSG[log_msg]
+        LOG_VMSG[log_vmsg]
+        LOG_HEADER[log_header]
+        LOG_SPECIAL[log_special]
+        LOG_FLUSH[log_flush]
+        
+        subgraph "配置管理"
+            LOG_LEVELS[logLevels[32]]
+            MOD_STRINGS[MODSTR/LVLSTR]
+            SLAVE_MOD[slaveMod标识]
+        end
+        
+        subgraph "缓冲区管理"
+            LOGBUF[logbuf缓冲区]
+            LOGLINE[logline数组]
+        end
+    end
+    
+    subgraph "Linux平台实现 (sys_log.c)"
+        SYS_ADDLOG[sys_addLog]
+        ADDLOG[addLog内部函数]
+        
+        subgraph "异步写入系统"
+            THREAD_LOG[thread_log后台线程]
+            OUTBUF[outbuf缓冲区]
+            DELAY_TIMER[延迟定时器]
+            COND_VAR[条件变量通知]
+        end
+        
+        subgraph "标准输出重定向"
+            STDOUT_AIO[stdout_aio异步IO]
+            STDOUT_READ[stdout_read处理]
+            PIPE_SYSTEM[管道系统]
+        end
+        
+        subgraph "文件写入"
+            WRITELOGDATA[writeLogData]
+            FILE_ROTATION[日志轮转]
+            DISK_IO[磁盘IO操作]
+        end
+    end
+    
+    subgraph "输出目标"
+        LOG_FILE[日志文件]
+        STDERR_FALLBACK[stderr降级输出]
+        ROTATED_FILES[轮转文件 .0,.1,.2...]
+    end
+    
+    %% 调用流程
+    APP --> LOG_CALLS
+    APP --> HAL_CALLS
+    APP --> PRINTF
+    
+    LOG_CALLS --> LOG_MSG
+    HAL_CALLS --> LOG_VMSG
+    LOG_MSG --> LOG_VMSG
+    
+    LOG_VMSG --> LOG_HEADER
+    LOG_VMSG --> LOGBUF
+    LOG_VMSG --> LOG_FLUSH
+    
+    LOG_SPECIAL --> LOG_HEADER
+    LOG_SPECIAL --> LOGBUF
+    
+    LOG_HEADER --> MOD_STRINGS
+    LOG_HEADER --> SLAVE_MOD
+    LOG_HEADER --> LOGLINE
+    
+    LOG_FLUSH --> SYS_ADDLOG
+    
+    %% 系统层处理
+    SYS_ADDLOG --> ADDLOG
+    PRINTF --> PIPE_SYSTEM
+    PIPE_SYSTEM --> STDOUT_READ
+    STDOUT_READ --> ADDLOG
+    
+    ADDLOG --> OUTBUF
+    ADDLOG --> DELAY_TIMER
+    ADDLOG --> COND_VAR
+    
+    DELAY_TIMER --> COND_VAR
+    COND_VAR --> THREAD_LOG
+    THREAD_LOG --> WRITELOGDATA
+    
+    WRITELOGDATA --> FILE_ROTATION
+    WRITELOGDATA --> DISK_IO
+    FILE_ROTATION --> ROTATED_FILES
+    DISK_IO --> LOG_FILE
+    
+    %% 错误处理
+    WRITELOGDATA -.-> STDERR_FALLBACK
+    
+    %% 配置影响
+    LOG_LEVELS -.-> LOG_VMSG
+    
+    %% 样式定义
+    classDef appLayer fill:#e1f5fe
+    classDef logCore fill:#f3e5f5
+    classDef sysLayer fill:#e8f5e8
+    classDef storage fill:#fff3e0
+    classDef async fill:#ffebee
+    
+    class APP,LOG_CALLS,HAL_CALLS,PRINTF appLayer
+    class LOG_MSG,LOG_VMSG,LOG_HEADER,LOG_SPECIAL,LOG_FLUSH,LOG_LEVELS,MOD_STRINGS,SLAVE_MOD,LOGBUF,LOGLINE logCore
+    class SYS_ADDLOG,ADDLOG,STDOUT_AIO,STDOUT_READ,PIPE_SYSTEM,WRITELOGDATA,FILE_ROTATION,DISK_IO sysLayer
+    class LOG_FILE,STDERR_FALLBACK,ROTATED_FILES storage
+    class THREAD_LOG,OUTBUF,DELAY_TIMER,COND_VAR async 

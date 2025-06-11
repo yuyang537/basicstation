@@ -1,0 +1,88 @@
+graph TD
+    A["程序启动<br/>main()"] --> B["sys_main()<br/>主入口函数"]
+    
+    B --> C["信号处理设置<br/>signal(SIGINT/SIGTERM)"]
+    C --> D["基础配置初始化<br/>s2conf_ini()<br/>logfile配置<br/>目录设置"]
+    D --> E["命令行参数解析<br/>argp_parse()"]
+    
+    E --> F{"主从进程模式?"}
+    F -->|从进程| G["从进程环境变量解析<br/>SLAVE_IDX/RDFD/WRFD"]
+    F -->|主进程| H["EUI前缀配置处理"]
+    
+    G --> H
+    H --> I["目录配置处理<br/>tempDir/homeDir"]
+    I --> J["配置文件解析<br/>parseStationConf()"]
+    J --> K["日志配置处理<br/>logFile/logLevel"]
+    K --> L["无线电初始化脚本配置<br/>radioInit"]
+    
+    L --> M{"特殊操作模式?"}
+    M -->|杀死进程| N["killOldPid()<br/>退出"]
+    M -->|打印参数| O["s2conf_printAll()<br/>退出"]
+    M -->|正常启动| P["进程冲突检查"]
+    
+    P --> Q{"守护进程模式?"}
+    Q -->|是| R["守护进程创建<br/>fork() + setsid()"]
+    Q -->|否| S["直接启动"]
+    
+    R --> T["系统核心初始化"]
+    S --> T
+    
+    T --> U["aio_ini()<br/>异步IO初始化"]
+    U --> V["sys_iniLogging()<br/>日志系统初始化"]
+    V --> W["sys_ini()<br/>系统信息打印"]
+    W --> X["rt_ini()<br/>运行时初始化"]
+    X --> Y["ts_iniTimesync()<br/>时间同步初始化"]
+    
+    Y --> Z{"进程类型判断"}
+    Z -->|从进程| AA["sys_startupSlave()<br/>从进程启动<br/>不返回"]
+    Z -->|主进程| BB{"启动模式选择"}
+    
+    BB -->|守护进程| CC["startupDaemon()<br/>守护进程启动"]
+    BB -->|直接启动| DD["startupMaster()<br/>主进程启动"]
+    
+    CC --> EE["创建工作进程<br/>fork()"]
+    EE --> FF["工作进程执行<br/>startupMaster()"]
+    EE --> GG["守护进程监控<br/>waitForWorker()"]
+    
+    DD --> HH["启动日志线程<br/>sys_startLogThread()"]
+    FF --> HH
+    
+    HH --> II{"自测试模式?"}
+    II -->|是| JJ["selftests()<br/>不返回"]
+    II -->|否| KK["写入PID文件<br/>writePid()"]
+    
+    KK --> LL["检查固件更新<br/>sys_runUpdate()"]
+    LL --> MM["无线电抽象层初始化<br/>ral_ini()"]
+    MM --> NN["注册退出清理<br/>atexit(leds_off)"]
+    NN --> OO["延迟启动第二阶段<br/>200ms后调用startupMaster2()"]
+    
+    OO --> PP["startupMaster2()<br/>服务启动阶段"]
+    PP --> QQ["添加功能特性<br/>rmtsh/prod/gps"]
+    QQ --> RR["启用命令FIFO<br/>sys_enableCmdFIFO()"]
+    RR --> SS{"GPS设备配置?"}
+    SS -->|是| TT["启用GPS<br/>sys_enableGPS()"]
+    SS -->|否| UU["初始化TC模块<br/>sys_iniTC()"]
+    TT --> UU
+    
+    UU --> VV["启动TC服务<br/>sys_startTC()"]
+    VV --> WW["初始化CUPS<br/>sys_iniCUPS()"]
+    WW --> XX["触发CUPS<br/>sys_triggerCUPS()"]
+    XX --> YY["初始化Web服务<br/>sys_iniWeb()"]
+    
+    YY --> ZZ["进入主事件循环<br/>aio_loop()<br/>不返回"]
+    
+    GG --> AAA{"工作进程状态检查"}
+    AAA -->|进程死亡| BBB["重启工作进程<br/>startupDaemon()"]
+    AAA -->|进程正常| CCC["500ms后再次检查"]
+    BBB --> EE
+    CCC --> AAA
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style T fill:#fff3e0
+    style PP fill:#e8f5e8
+    style ZZ fill:#ffebee
+    style AA fill:#fce4ec
+    style N fill:#ffcdd2
+    style O fill:#ffcdd2
+    style JJ fill:#ffcdd2 

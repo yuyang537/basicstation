@@ -1,0 +1,56 @@
+stateDiagram-v2
+    [*] --> WS_DEAD : 初始状态
+    
+    WS_DEAD --> WS_TLS_HANDSHAKE : ws_connect()<br/>需要TLS连接
+    WS_DEAD --> WS_CLIENT_REQ : ws_connect()<br/>TCP连接
+    
+    WS_TLS_HANDSHAKE --> WS_CLIENT_REQ : TLS握手成功
+    WS_TLS_HANDSHAKE --> WS_DEAD : TLS握手失败
+    
+    WS_CLIENT_REQ --> WS_SERVER_RESP : 发送HTTP Upgrade请求
+    WS_CLIENT_REQ --> WS_DEAD : 发送失败
+    
+    WS_SERVER_RESP --> WS_CONNECTED : 收到101 Switching Protocols
+    WS_SERVER_RESP --> WS_DEAD : 收到其他响应或超时
+    
+    WS_CONNECTED --> WS_CLOSING_DRAINC : ws_close()<br/>客户端主动关闭
+    WS_CONNECTED --> WS_CLOSING_DRAINS : 收到关闭帧<br/>服务器主动关闭
+    WS_CONNECTED --> WS_DEAD : 连接异常断开
+    
+    state WS_CONNECTED {
+        [*] --> DataTransfer
+        DataTransfer --> SendFrame : ws_sendData()
+        DataTransfer --> RecvFrame : 接收到数据
+        SendFrame --> DataTransfer : 发送完成
+        RecvFrame --> DataTransfer : 处理完成
+        
+        DataTransfer --> PingPong : 心跳机制
+        PingPong --> DataTransfer : 心跳完成
+    }
+    
+    WS_CLOSING_DRAINC --> WS_CLOSING_SENDCLOSE : 排空发送缓冲区
+    WS_CLOSING_DRAINS --> WS_CLOSING_ECHOCLOSE : 排空发送缓冲区
+    
+    WS_CLOSING_SENDCLOSE --> WS_CLOSING_SENTCLOSE : 发送关闭帧
+    WS_CLOSING_SENTCLOSE --> WS_CLOSED : 收到关闭帧响应
+    WS_CLOSING_SENTCLOSE --> WS_CLOSED : 关闭超时
+    
+    WS_CLOSING_ECHOCLOSE --> WS_CLOSED : 发送关闭帧响应
+    
+    WS_CLOSED --> [*] : ws_shutdown()<br/>清理资源
+    
+    note right of WS_CONNECTED
+        数据传输状态：
+        - 发送/接收文本帧
+        - 发送/接收二进制帧
+        - 处理控制帧(Ping/Pong)
+        - 错误检测和恢复
+    end note
+    
+    note right of WS_CLOSING_DRAINC
+        客户端关闭流程：
+        1. 排空发送缓冲区
+        2. 发送关闭帧
+        3. 等待服务器响应
+        4. 关闭连接
+    end note 

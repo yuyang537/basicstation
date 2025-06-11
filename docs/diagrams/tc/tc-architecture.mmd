@@ -1,0 +1,99 @@
+graph TB
+    subgraph "🏗️ TC传输控制器架构"
+        subgraph "🎯 TC核心对象 (tc_t)"
+            TC_OBJ["📦 TC对象<br/>• tstate: 连接状态<br/>• retries: 重试次数<br/>• credset: 凭据集<br/>• muxsuri[]: MUXS地址"]
+            WS_OBJ["🌐 WebSocket连接<br/>ws_t ws<br/>• 发送/接收缓冲区<br/>• 连接状态管理<br/>• 事件回调机制"]
+            TMR_OBJ["⏰ 超时定时器<br/>tmr_t timeout<br/>• 连接超时检测<br/>• 退避时间控制"]
+            S2E_OBJ["📡 S2E协议上下文<br/>s2ctx_t s2ctx<br/>• JSON消息处理<br/>• 二进制数据处理<br/>• RX作业队列"]
+            CALLBACK["🔄 完成回调<br/>tmrcb_t ondone<br/>• 重连控制<br/>• 错误处理"]
+        end
+        
+        subgraph "🔗 连接管理层"
+            INFOS_MGR["📋 INFOS查询管理<br/>tc_info_request()<br/>• 发送路由器EUI查询<br/>• 解析服务器响应<br/>• 提取MUXS连接信息"]
+            MUXS_MGR["🌐 MUXS连接管理<br/>tc_muxs_connection()<br/>• 建立数据连接<br/>• 发送版本信息<br/>• 处理S2E消息"]
+            RETRY_MGR["🔄 重连管理<br/>tc_continue()<br/>• 指数退避算法<br/>• 快速重连策略<br/>• CUPS触发逻辑"]
+        end
+        
+        subgraph "📊 状态机控制"
+            STATE_CTRL["🎛️ 状态控制器<br/>• TC_INI: 初始状态<br/>• TC_INFOS_REQ_PEND<br/>• TC_INFOS_GOT_URI<br/>• TC_MUXS_REQ_PEND<br/>• TC_MUXS_CONNECTED<br/>• TC_*_BACKOFF: 退避状态<br/>• TC_ERR_*: 错误状态"]
+        end
+        
+        subgraph "🛠️ 资源管理"
+            LIFECYCLE["🔄 生命周期管理<br/>• tc_ini(): 初始化<br/>• tc_start(): 启动连接<br/>• tc_free(): 资源释放"]
+            ERROR_HDL["❌ 错误处理<br/>tc_done()<br/>• 统一错误处理<br/>• 资源清理<br/>• 状态通知"]
+        end
+    end
+    
+    subgraph "🌍 外部依赖系统"
+        subgraph "🔧 系统服务"
+            SYS_SVC["⚙️ 系统服务<br/>• sys_uri(): 获取配置<br/>• sys_eui(): 获取EUI<br/>• sys_version(): 版本信息<br/>• sys_*CUPS(): CUPS管理"]
+            NET_SVC["🌐 网络服务<br/>• ws_connect(): WebSocket连接<br/>• conn_setup_tls(): TLS设置<br/>• uri_parse(): URI解析"]
+        end
+        
+        subgraph "📡 协议层"
+            S2E_PROTO["📡 S2E协议层<br/>• s2e_onMsg(): JSON处理<br/>• s2e_onBinary(): 二进制处理<br/>• s2e_flushRxjobs(): 队列刷新"]
+            JSON_PROC["📄 JSON处理器<br/>• uj_encode*(): 编码<br/>• uj_decode*(): 解码<br/>• 字段提取和验证"]
+        end
+        
+        subgraph "⏱️ 运行时系统"
+            RT_SYS["⏱️ 运行时服务<br/>• rt_malloc(): 内存分配<br/>• rt_setTimerCb(): 定时器<br/>• rt_yieldTo(): 回调调度"]
+        end
+        
+        subgraph "🌍 远程服务"
+            INFOS_SRV["📋 INFOS服务<br/>• 路由器信息查询<br/>• MUXS地址分配<br/>• 错误响应处理"]
+            MUXS_SRV["🌐 MUXS服务<br/>• LoRaWAN数据复用<br/>• S2E协议处理<br/>• 实时数据传输"]
+            CUPS_SRV["⚙️ CUPS服务<br/>• 配置更新<br/>• 凭据管理<br/>• 自动重配置"]
+        end
+    end
+    
+    %% 核心对象内部关系
+    TC_OBJ --> WS_OBJ
+    TC_OBJ --> TMR_OBJ
+    TC_OBJ --> S2E_OBJ
+    TC_OBJ --> CALLBACK
+    
+    %% TC到管理层的关系
+    TC_OBJ --> INFOS_MGR
+    TC_OBJ --> MUXS_MGR
+    TC_OBJ --> RETRY_MGR
+    TC_OBJ --> STATE_CTRL
+    
+    %% 管理层到资源管理
+    INFOS_MGR --> LIFECYCLE
+    MUXS_MGR --> LIFECYCLE
+    RETRY_MGR --> ERROR_HDL
+    STATE_CTRL --> ERROR_HDL
+    
+    %% TC到外部系统的接口
+    LIFECYCLE --> SYS_SVC
+    INFOS_MGR --> NET_SVC
+    MUXS_MGR --> NET_SVC
+    
+    S2E_OBJ --> S2E_PROTO
+    INFOS_MGR --> JSON_PROC
+    MUXS_MGR --> JSON_PROC
+    
+    TMR_OBJ --> RT_SYS
+    LIFECYCLE --> RT_SYS
+    ERROR_HDL --> RT_SYS
+    
+    %% 外部服务连接
+    INFOS_MGR -.->|WebSocket| INFOS_SRV
+    MUXS_MGR -.->|WebSocket| MUXS_SRV
+    RETRY_MGR -.->|HTTP| CUPS_SRV
+    
+    %% 数据流方向
+    INFOS_SRV -.->|MUXS URI| INFOS_MGR
+    MUXS_SRV -.->|S2E Messages| MUXS_MGR
+    CUPS_SRV -.->|New Config| SYS_SVC
+    
+    %% 样式定义
+    classDef tcCore fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef management fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef external fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef remote fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
+    
+    class TC_OBJ,WS_OBJ,TMR_OBJ,S2E_OBJ,CALLBACK tcCore
+    class INFOS_MGR,MUXS_MGR,RETRY_MGR,STATE_CTRL,LIFECYCLE,ERROR_HDL management
+    class SYS_SVC,NET_SVC,S2E_PROTO,JSON_PROC,RT_SYS external
+    class INFOS_SRV,MUXS_SRV,CUPS_SRV remote 

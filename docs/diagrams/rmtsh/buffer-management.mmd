@@ -1,0 +1,220 @@
+graph TD
+    subgraph "缓冲区配置常量"
+        C1[UPBUFSZ = 4096<br/>上行缓冲区大小]
+        C2[DNBUFSZ = 4096<br/>下行缓冲区大小]
+        C3[UPBUFHI = 2048<br/>上行高水位阈值]
+        C4[DNBUFHI = 2048<br/>下行高水位阈值]
+        C5[WS_CHUNKS<br/>WebSocket分片大小]
+    end
+    
+    subgraph "上行缓冲区管理(Shell输出)"
+        subgraph "缓冲区状态"
+            U1[upbuf[4096]<br/>数据缓冲区]
+            U2[upfill<br/>数据填充位置]
+            U3[upsink<br/>已发送位置]
+            U4[可用空间计算<br/>UPBUFSZ - upfill]
+        end
+        
+        subgraph "数据写入流程"
+            UW1[up_read读取PTY数据]
+            UW2[检查缓冲区剩余空间]
+            UW3[将数据写入upbuf+upfill]
+            UW4[更新upfill位置]
+            UW5[更新mtime活动时间]
+        end
+        
+        subgraph "数据发送流程"
+            US1[计算可发送数据量]
+            US2[min(WS_CHUNKS, upfill-upsink)]
+            US3[获取WebSocket发送缓冲区]
+            US4[复制数据到发送缓冲区]
+            US5[发送二进制数据]
+            US6[更新upsink位置]
+        end
+        
+        subgraph "上行压缩机制"
+            UC1{upfill >= UPBUFHI?}
+            UC2{upsink > 0?}
+            UC3[memcpy移动未发送数据]
+            UC4[upfill -= upsink]
+            UC5[upsink = 0]
+            UC6[释放已发送空间]
+        end
+    end
+    
+    subgraph "下行缓冲区管理(用户输入)"
+        subgraph "缓冲区状态"
+            D1[dnbuf[4096]<br/>数据缓冲区]
+            D2[dnfill<br/>数据填充位置]
+            D3[dnsink<br/>已写入位置]
+            D4[可用空间计算<br/>DNBUFSZ - dnfill]
+        end
+        
+        subgraph "数据填入流程"
+            DF1[s2e_onBinary接收数据]
+            DF2[dn_fill处理数据]
+            DF3[检查缓冲区空间]
+            DF4[将数据追加到dnbuf]
+            DF5[更新dnfill位置]
+            DF6[触发dn_write]
+        end
+        
+        subgraph "数据写出流程"
+            DW1[dn_write异步写入]
+            DW2[循环写入待发送数据]
+            DW3[write写入PTY主端]
+            DW4[更新dnsink位置]
+            DW5[检查是否写完]
+            DW6[清理缓冲区状态]
+        end
+        
+        subgraph "下行压缩机制"
+            DC1{dnfill + len > DNBUFSZ?}
+            DC2{dnsink > 0?}
+            DC3[memcpy移动未写入数据]
+            DC4[dnfill -= dnsink]
+            DC5[dnsink = 0]
+            DC6{空间仍不足?}
+            DC7[缓冲区溢出错误]
+            DC8[停止Shell会话]
+        end
+    end
+    
+    subgraph "流控制机制"
+        subgraph "上行流控制"
+            UF1[无TC连接时]
+            UF2{upfill >= UPBUFHI?}
+            UF3[upsink = UPBUFHI]
+            UF4[强制释放空间]
+            UF5[防止内存溢出]
+        end
+        
+        subgraph "下行流控制"
+            DF1[写入缓冲区满时]
+            DF2[EAGAIN错误处理]
+            DF3[重新注册写回调]
+            DF4[等待下次可写事件]
+            DF5[写入错误停止会话]
+        end
+        
+        subgraph "网络流控制"
+            NF1[WebSocket缓冲区检查]
+            NF2[getSendbuf获取空间]
+            NF3{缓冲区可用?}
+            NF4[发送数据]
+            NF5[记录警告信息]
+            NF6[丢弃数据或重试]
+        end
+    end
+    
+    subgraph "错误处理和监控"
+        E1[缓冲区溢出检测]
+        E2[内存使用监控]
+        E3[数据完整性检查]
+        E4[性能统计]
+        E5[错误恢复策略]
+        E6[资源清理]
+    end
+    
+    %% 配置常量关系
+    C1 --> U1
+    C2 --> D1
+    C3 --> UC1
+    C4 --> DC1
+    C5 --> US2
+    
+    %% 上行数据流程
+    UW1 --> UW2
+    UW2 --> UW3
+    UW3 --> UW4
+    UW4 --> UW5
+    UW5 --> US1
+    
+    %% 上行发送流程
+    US1 --> US2
+    US2 --> US3
+    US3 --> US4
+    US4 --> US5
+    US5 --> US6
+    
+    %% 上行压缩流程
+    US6 --> UC1
+    UC1 -->|是| UC2
+    UC1 -->|否| UW1
+    UC2 -->|是| UC3
+    UC2 -->|否| UW1
+    UC3 --> UC4
+    UC4 --> UC5
+    UC5 --> UC6
+    UC6 --> UW1
+    
+    %% 下行数据流程
+    DF1 --> DF2
+    DF2 --> DF3
+    DF3 --> DF4
+    DF4 --> DF5
+    DF5 --> DF6
+    DF6 --> DW1
+    
+    %% 下行写出流程
+    DW1 --> DW2
+    DW2 --> DW3
+    DW3 --> DW4
+    DW4 --> DW5
+    DW5 -->|否| DW2
+    DW5 -->|是| DW6
+    
+    %% 下行压缩流程
+    DF3 --> DC1
+    DC1 -->|是| DC2
+    DC1 -->|否| DF4
+    DC2 -->|是| DC3
+    DC2 -->|否| DC6
+    DC3 --> DC4
+    DC4 --> DC5
+    DC5 --> DC6
+    DC6 -->|是| DC7
+    DC6 -->|否| DF4
+    DC7 --> DC8
+    
+    %% 流控制连接
+    US3 --> UF1
+    UF1 --> UF2
+    UF2 -->|是| UF3
+    UF3 --> UF4
+    UF4 --> UF5
+    
+    DW3 --> DF1
+    DF1 --> DF2
+    DF2 --> DF3
+    DF3 --> DF4
+    DF4 --> DF5
+    
+    US3 --> NF1
+    NF1 --> NF2
+    NF2 --> NF3
+    NF3 -->|是| NF4
+    NF3 -->|否| NF5
+    NF5 --> NF6
+    
+    %% 错误处理连接
+    DC7 --> E1
+    UF5 --> E2
+    UC6 --> E3
+    US5 --> E4
+    DC8 --> E5
+    DW6 --> E6
+    
+    %% 样式定义
+    classDef configStyle fill:#e1f5fe
+    classDef upBufferStyle fill:#f3e5f5
+    classDef downBufferStyle fill:#fff3e0
+    classDef flowStyle fill:#e8f5e8
+    classDef compressStyle fill:#fce4ec
+    classDef errorStyle fill:#ffebee
+    
+    class C1,C2,C3,C4,C5 configStyle
+    class U1,U2,U3,U4,UW1,UW2,UW3,UW4,UW5,US1,US2,US3,US4,US5,US6,UC1,UC2,UC3,UC4,UC5,UC6 upBufferStyle
+    class D1,D2,D3,D4,DF1,DF2,DF3,DF4,DF5,DF6,DW1,DW2,DW3,DW4,DW5,DW6,DC1,DC2,DC3,DC4,DC5,DC6,DC7,DC8 downBufferStyle
+    class UF1,UF2,UF3,UF4,UF5,DF1,DF2,DF3,DF4,DF5,NF1,NF2,NF3,NF4,NF5,NF6 flowStyle
+    class E1,E2,E3,E4,E5,E6 errorStyle 

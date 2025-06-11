@@ -1,0 +1,94 @@
+flowchart TD
+    subgraph "设备过滤机制架构"
+        A[接收LoRaWAN帧] --> B{帧类型识别}
+        
+        B -->|Join Request/Rejoin| C[JoinEUI过滤流程]
+        B -->|Data帧| D[NetID过滤流程]
+        B -->|其他帧类型| E[直接通过，无需过滤]
+        
+        subgraph "JoinEUI过滤器详细流程"
+            C --> F{检查过滤器状态}
+            F -->|s2e_joineuiFilter[0] == 0| G[过滤器未启用<br/>允许所有JoinEUI]
+            F -->|s2e_joineuiFilter[0] != 0| H[过滤器已启用]
+            
+            H --> I[提取JoinEUI<br/>8字节小端序]
+            I --> J[初始化指针<br/>f = s2e_joineuiFilter-2]
+            J --> K[循环遍历范围对]
+            
+            K --> L{*(f += 2) != 0}
+            L -->|false 遍历结束| M[未找到匹配范围<br/>过滤该设备]
+            L -->|true 检查当前范围| N{joineui >= f[0] &&<br/>joineui <= f[1]}
+            
+            N -->|false 不在范围内| K
+            N -->|true 在范围内| O[找到匹配范围<br/>允许该设备]
+            
+            G --> SUCCESS1[通过JoinEUI过滤]
+            O --> SUCCESS1
+            M --> REJECT1[JoinEUI过滤拒绝<br/>记录过滤日志]
+        end
+        
+        subgraph "NetID过滤器详细流程"
+            D --> P[提取DevAddr<br/>4字节小端序]
+            P --> Q[计算NetID<br/>devaddr >> 25<br/>取高7位]
+            Q --> R[计算数组索引<br/>netid >> 5<br/>除以32取整]
+            R --> S[计算位索引<br/>netid & 0x1F<br/>模32取余]
+            
+            S --> T[生成位掩码<br/>1 << 位索引]
+            T --> U[执行位运算检查<br/>掩码 & s2e_netidFilter[数组索引]]
+            
+            U --> V{检查结果 != 0}
+            V -->|true 位已设置| SUCCESS2[通过NetID过滤]
+            V -->|false 位未设置| REJECT2[NetID过滤拒绝<br/>记录过滤日志]
+        end
+        
+        subgraph "过滤器配置结构"
+            W[JoinEUI过滤器配置]
+            W --> X["数据结构:<br/>uL_t* s2e_joineuiFilter<br/>范围数组指针"]
+            X --> Y["数组格式:<br/>[min1, max1,<br/> min2, max2,<br/> ...,<br/> 0] 结束标记"]
+            Y --> Z["范围检查:<br/>包含边界值<br/>支持多个不连续范围"]
+            
+            AA[NetID过滤器配置]
+            AA --> BB["数据结构:<br/>u4_t s2e_netidFilter[4]<br/>128位位图"]
+            BB --> CC["位图映射:<br/>0-31: 数组[0]<br/>32-63: 数组[1]<br/>64-95: 数组[2]<br/>96-127: 数组[3]"]
+            CC --> DD["默认值:<br/>0xFFFFFFFF<br/>允许所有NetID"]
+        end
+        
+        subgraph "过滤决策和日志"
+            SUCCESS1 --> EE[继续协议解析]
+            SUCCESS2 --> EE
+            E --> EE
+            
+            REJECT1 --> FF[生成过滤日志<br/>Join EUI %E filtered]
+            REJECT2 --> GG[生成过滤日志<br/>DevAddr=%X with NetID=%d filtered]
+            FF --> HH[返回过滤结果 0]
+            GG --> HH
+            
+            EE --> II[正常解析流程<br/>返回解析结果 1]
+        end
+        
+        subgraph "性能优化特点"
+            JJ[JoinEUI过滤器特点]
+            JJ --> KK["线性扫描算法<br/>适合少量范围配置"]
+            KK --> LL["支持范围重叠<br/>灵活配置策略"]
+            LL --> MM["首次匹配即退出<br/>减少不必要检查"]
+            
+            NN[NetID过滤器特点]
+            NN --> OO["位运算检查<br/>O(1)时间复杂度"]
+            OO --> PP["紧凑存储格式<br/>128位支持所有NetID"]
+            PP --> QQ["硬件友好算法<br/>高效缓存利用"]
+        end
+    end
+
+    classDef inputNode fill:#e1f5fe
+    classDef processNode fill:#fff3e0
+    classDef filterNode fill:#f3e5f5
+    classDef successNode fill:#c8e6c9
+    classDef rejectNode fill:#ffcdd2
+    classDef configNode fill:#e8f5e8
+
+    class A,B inputNode
+    class F,H,I,J,K,L,N,P,Q,R,S,T,U,V processNode
+    class C,D,G,O,M filterNode
+    class SUCCESS1,SUCCESS2,E,EE,II successNode
+    class REJECT1,REJECT2,FF,GG,HH rejectNode
+    class W,X,Y,Z,AA,BB,CC,DD,JJ,KK,LL,MM,NN,OO,PP,QQ configNode 

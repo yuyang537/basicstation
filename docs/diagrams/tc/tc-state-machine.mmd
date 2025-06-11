@@ -1,0 +1,78 @@
+stateDiagram-v2
+    [*] --> TC_INI : 初始化TC对象<br/>tc_ini()
+    
+    TC_INI --> TC_INFOS_REQ_PEND : 开始INFOS查询<br/>tc_start()
+    TC_INI --> TC_ERR_NOURI : 无TC URI配置
+    TC_INI --> TC_ERR_FAILED : TLS设置失败<br/>或连接失败
+    
+    TC_INFOS_REQ_PEND --> TC_INFOS_GOT_URI : 成功获取MUXS URI<br/>WSEV_TEXTRCVD
+    TC_INFOS_REQ_PEND --> TC_ERR_TIMEOUT : INFOS查询超时<br/>tc_timeout()
+    TC_INFOS_REQ_PEND --> TC_ERR_FAILED : JSON解析失败
+    TC_INFOS_REQ_PEND --> TC_ERR_REJECTED : 服务器返回错误
+    TC_INFOS_REQ_PEND --> TC_ERR_CLOSED : 连接意外关闭
+    
+    TC_INFOS_GOT_URI --> TC_MUXS_REQ_PEND : 开始MUXS连接<br/>tc_connect_muxs()
+    TC_INFOS_GOT_URI --> TC_ERR_FAILED : MUXS连接失败
+    
+    TC_MUXS_REQ_PEND --> TC_MUXS_CONNECTED : MUXS连接成功<br/>WSEV_CONNECTED
+    TC_MUXS_REQ_PEND --> TC_ERR_TIMEOUT : MUXS连接超时<br/>tc_timeout()
+    TC_MUXS_REQ_PEND --> TC_ERR_FAILED : MUXS连接失败
+    TC_MUXS_REQ_PEND --> TC_ERR_CLOSED : MUXS连接关闭
+    
+    TC_MUXS_CONNECTED --> TC_ERR_CLOSED : 连接断开<br/>WSEV_CLOSED
+    TC_MUXS_CONNECTED --> TC_ERR_FAILED : S2E处理错误<br/>s2e_onMsg/onBinary失败
+    
+    %% 退避状态
+    TC_INFOS_BACKOFF --> TC_INFOS_REQ_PEND : 退避时间到<br/>重新查询INFOS
+    TC_MUXS_BACKOFF --> TC_MUXS_REQ_PEND : 退避时间到<br/>重连MUXS
+    
+    %% 错误状态的重连逻辑
+    TC_ERR_CLOSED --> TC_MUXS_BACKOFF : MUXS快速重连<br/>retries <= 4
+    TC_ERR_CLOSED --> TC_INFOS_BACKOFF : 重新INFOS查询<br/>retries > 4
+    TC_ERR_FAILED --> TC_INFOS_BACKOFF : 退避后重试<br/>tc_continue()
+    TC_ERR_TIMEOUT --> TC_INFOS_BACKOFF : 超时后重试
+    
+    TC_ERR_REJECTED --> CUPS_UPDATE : 触发CUPS更新<br/>sys_triggerCUPS()
+    TC_ERR_NOURI --> CUPS_UPDATE : 触发CUPS更新<br/>sys_triggerCUPS()
+    
+    %% 终止状态
+    TC_ERR_REJECTED --> TC_ERR_DEAD : 重试次数超限<br/>retries >= 10
+    TC_ERR_FAILED --> TC_ERR_DEAD : 系统停止<br/>sys_stopTC()
+    TC_ERR_CLOSED --> TC_ERR_DEAD : 系统停止
+    TC_ERR_TIMEOUT --> TC_ERR_DEAD : 系统停止
+    TC_ERR_NOURI --> TC_ERR_DEAD : 系统停止
+    
+    TC_MUXS_CONNECTED --> TC_ERR_DEAD : 系统关闭<br/>sys_stopTC()
+    
+    TC_ERR_DEAD --> [*] : 对象销毁<br/>tc_free()
+    
+    CUPS_UPDATE --> [*] : 配置更新完成<br/>等待重启
+    
+    %% 状态说明
+    note right of TC_INI
+        初始状态
+        • 分配TC对象
+        • 初始化资源
+        • 设置S2E接口
+    end note
+    
+    note right of TC_MUXS_CONNECTED
+        运行状态
+        • 发送版本信息
+        • 处理S2E消息
+        • 刷新RX作业队列
+    end note
+    
+    note right of TC_INFOS_BACKOFF
+        退避重连
+        • 指数退避算法
+        • 最大退避60秒
+        • 重新创建TC对象
+    end note
+    
+    note right of TC_MUXS_BACKOFF
+        快速重连
+        • 指数退避: 1,2,4,8,16秒
+        • 保持MUXS URI
+        • 直接重连MUXS
+    end note 

@@ -1,0 +1,102 @@
+sequenceDiagram
+    participant App as 应用程序
+    participant ConfSys as s2conf配置系统
+    participant Parser as 解析器
+    participant Env as 环境变量
+    participant File as 配置文件
+    participant JSON as JSON解码器
+    participant Memory as 内存存储
+    
+    Note over App,Memory: S2配置系统初始化和参数设置流程
+    
+    %% 系统初始化阶段
+    App->>ConfSys: s2conf_ini()
+    Note over ConfSys: 初始化配置系统
+    
+    loop 遍历所有配置参数
+        ConfSys->>ConfSys: 读取conf_params数组
+        ConfSys->>Parser: s2conf_set("builtin", name, default_value)
+        Parser->>JSON: uj_iniDecoder()
+        JSON->>JSON: uj_decode()
+        Parser->>Memory: 设置默认值到全局变量
+        
+        ConfSys->>Env: getenv(param_name)
+        alt 环境变量存在
+            Env-->>ConfSys: 返回环境变量值
+            alt 参数类型是字符串
+                ConfSys->>Parser: s2conf_set("env", name, quoted_value)
+            else 其他类型
+                ConfSys->>Parser: s2conf_set("env", name, value)
+            end
+            Parser->>JSON: 解析环境变量值
+            Parser->>Memory: 覆盖默认值
+        else 环境变量不存在
+            Note over Env: 保持默认值
+        end
+    end
+    
+    %% 配置文件处理阶段
+    App->>File: 读取配置文件
+    File-->>App: 配置文件内容
+    loop 配置文件中的每个参数
+        App->>ConfSys: s2conf_set("config", name, value)
+        ConfSys->>ConfSys: s2conf_get(name)
+        alt 参数存在
+            ConfSys->>Parser: 调用对应的parseFn
+            alt 参数类型判断
+                Parser->>JSON: parse_bool() - 布尔值
+                Parser->>JSON: parse_u4() - 整数
+                Parser->>JSON: parse_str() - 字符串
+                Parser->>JSON: parse_tspan_*() - 时间跨度
+                Parser->>JSON: parse_size_*() - 大小
+            end
+            JSON->>JSON: uj_decode()
+            alt 解析成功
+                Parser->>Memory: 更新全局变量
+                ConfSys-->>App: 返回1(成功)
+            else 解析失败
+                Parser->>Parser: LOG(ERROR, "解析失败")
+                ConfSys-->>App: 返回0(失败)
+            end
+        else 参数不存在
+            ConfSys-->>App: 返回0(未知参数)
+        end
+    end
+    
+    %% 命令行参数处理阶段
+    App->>App: 解析命令行参数
+    loop 命令行中的每个参数
+        App->>ConfSys: s2conf_set("cmdline", name, value)
+        Note over ConfSys: 同配置文件处理流程
+        ConfSys->>Parser: 参数解析和验证
+        Parser->>Memory: 最终参数值设置
+    end
+    
+    %% 运行时查询阶段
+    App->>ConfSys: s2conf_get(param_name)
+    ConfSys->>ConfSys: 查找conf_params数组
+    alt 参数存在
+        ConfSys-->>App: 返回参数结构体指针
+        App->>Memory: 直接访问全局变量值
+    else 参数不存在
+        ConfSys-->>App: 返回NULL
+    end
+    
+    %% 调试输出阶段
+    App->>ConfSys: s2conf_printAll()
+    loop 遍历所有参数
+        ConfSys->>ConfSys: printf(name, type, src, value)
+    end
+    
+    %% 错误处理示例
+    Note over ConfSys,JSON: 错误处理机制
+    alt JSON解析错误
+        JSON->>Parser: uj_error()
+        Parser->>Parser: LOG(ERROR, 详细错误信息)
+        Parser->>Memory: 恢复到"builtin"默认值
+    end
+    
+    alt 内存管理
+        Parser->>Memory: rt_free(旧字符串值)
+        Parser->>Memory: rt_strdup(新字符串值)
+    end 

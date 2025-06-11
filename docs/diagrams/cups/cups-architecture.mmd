@@ -1,0 +1,191 @@
+graph TB
+    subgraph "应用层"
+        SYS[系统核心<br/>配置管理]
+        TC_MODULE[TC传输模块<br/>连接协调]
+        UPDATE_SYS[更新系统<br/>固件管理]
+    end
+    
+    subgraph "CUPS协议模块 (cups.c)"
+        direction TB
+        
+        subgraph "会话管理"
+            CUPS_SESSION[CUPS会话对象<br/>cups_t]
+            SESSION_INIT[会话初始化<br/>cups_ini]
+            SESSION_FREE[会话释放<br/>cups_free]
+            SESSION_START[会话启动<br/>cups_start]
+        end
+        
+        subgraph "协议状态机"
+            STATE_INIT[初始状态<br/>CUPS_INI]
+            STATE_REQ[请求发送<br/>CUPS_HTTP_REQ_PEND]
+            STATE_URI[URI接收<br/>CUPS_FEED_*_URI]
+            STATE_CRED[凭据接收<br/>CUPS_FEED_*_CRED]
+            STATE_SIG[签名接收<br/>CUPS_FEED_SIGNATURE]
+            STATE_UPDATE[更新接收<br/>CUPS_FEED_UPDATE]
+            STATE_DONE[完成状态<br/>CUPS_DONE]
+            STATE_ERROR[错误状态<br/>CUPS_ERR_*]
+        end
+        
+        subgraph "数据处理引擎"
+            PROTO_PARSER[协议解析器<br/>cups_update_info]
+            SEGMENT_HANDLER[分段处理器<br/>分段数据接收]
+            LENGTH_PARSER[长度解析器<br/>sizelen函数]
+            DATA_VALIDATOR[数据验证器<br/>协议完整性检查]
+        end
+        
+        subgraph "数字签名系统"
+            SIG_STRUCT[签名结构<br/>cups_sig_t]
+            SIG_VERIFY[签名验证<br/>cups_verifySig]
+            HASH_CALC[哈希计算<br/>SHA-512]
+            ECDSA_VERIFY[ECDSA验证<br/>椭圆曲线数字签名]
+        end
+        
+        subgraph "更新处理系统"
+            UPDATE_FLAGS[更新标志<br/>uflags处理]
+            URI_UPDATE[URI更新处理]
+            CRED_UPDATE[凭据更新处理]
+            FW_UPDATE[固件更新处理]
+            UPDATE_DECISION[更新决策逻辑]
+        end
+        
+        subgraph "连接管理"
+            HTTP_CONN[HTTP连接<br/>基于http模块]
+            TLS_SUPPORT[TLS支持<br/>安全连接]
+            TIMEOUT_MGR[超时管理<br/>cups_timeout]
+            RETRY_LOGIC[重试逻辑<br/>凭据轮换]
+        end
+        
+        subgraph "定时器系统"
+            SYNC_TIMER[同步定时器<br/>cups_sync_tmr]
+            DELAY_TIMER[延迟定时器<br/>delayedCUPSstart]
+            CONN_TIMER[连接定时器<br/>超时控制]
+            SCHEDULE_MGR[调度管理器<br/>cups_ondone]
+        end
+    end
+    
+    subgraph "依赖模块"
+        direction TB
+        
+        subgraph "网络通信层"
+            HTTP_MODULE[HTTP模块<br/>RESTful通信]
+            TLS_MODULE[TLS模块<br/>安全传输]
+            NET_MODULE[网络模块<br/>TCP连接]
+        end
+        
+        subgraph "密码学库"
+            MBEDTLS[mbedTLS库]
+            ECDSA_LIB[ECDSA算法]
+            SHA512_LIB[SHA-512算法]
+            BIGNUM_LIB[大整数运算]
+        end
+        
+        subgraph "系统服务"
+            URI_SERVICE[URI管理服务]
+            CRED_SERVICE[凭据管理服务]
+            UPDATE_SERVICE[更新管理服务]
+            LOG_SERVICE[日志服务]
+        end
+    end
+    
+    subgraph "外部服务器"
+        CUPS_SERVER[CUPS服务器<br/>配置更新服务]
+        FW_REPO[固件仓库<br/>更新包存储]
+        CERT_AUTH[证书认证<br/>数字签名验证]
+    end
+    
+    %% 应用层到CUPS模块连接
+    SYS --> CUPS_SESSION
+    TC_MODULE --> SESSION_START
+    UPDATE_SYS --> FW_UPDATE
+    
+    %% 会话管理流程
+    SESSION_INIT --> CUPS_SESSION
+    CUPS_SESSION --> SESSION_START
+    SESSION_START --> HTTP_CONN
+    SESSION_FREE --> CUPS_SESSION
+    
+    %% 协议状态机流程
+    STATE_INIT --> STATE_REQ
+    STATE_REQ --> STATE_URI
+    STATE_URI --> STATE_CRED
+    STATE_CRED --> STATE_SIG
+    STATE_SIG --> STATE_UPDATE
+    STATE_UPDATE --> STATE_DONE
+    STATE_REQ --> STATE_ERROR
+    STATE_ERROR --> RETRY_LOGIC
+    
+    %% 数据处理流程
+    PROTO_PARSER --> SEGMENT_HANDLER
+    SEGMENT_HANDLER --> LENGTH_PARSER
+    LENGTH_PARSER --> DATA_VALIDATOR
+    DATA_VALIDATOR --> UPDATE_FLAGS
+    
+    %% 数字签名流程
+    SIG_STRUCT --> HASH_CALC
+    HASH_CALC --> ECDSA_VERIFY
+    ECDSA_VERIFY --> SIG_VERIFY
+    SIG_VERIFY --> UPDATE_DECISION
+    
+    %% 更新处理流程
+    UPDATE_FLAGS --> URI_UPDATE
+    UPDATE_FLAGS --> CRED_UPDATE
+    UPDATE_FLAGS --> FW_UPDATE
+    UPDATE_DECISION --> FW_UPDATE
+    
+    %% 连接管理流程
+    HTTP_CONN --> TLS_SUPPORT
+    TIMEOUT_MGR --> RETRY_LOGIC
+    RETRY_LOGIC --> HTTP_CONN
+    
+    %% 定时器管理流程
+    SYNC_TIMER --> DELAY_TIMER
+    DELAY_TIMER --> SESSION_START
+    CONN_TIMER --> TIMEOUT_MGR
+    SCHEDULE_MGR --> SYNC_TIMER
+    
+    %% 依赖模块集成
+    HTTP_CONN --> HTTP_MODULE
+    TLS_SUPPORT --> TLS_MODULE
+    HTTP_MODULE --> NET_MODULE
+    
+    SIG_VERIFY --> MBEDTLS
+    ECDSA_VERIFY --> ECDSA_LIB
+    HASH_CALC --> SHA512_LIB
+    ECDSA_LIB --> BIGNUM_LIB
+    
+    URI_UPDATE --> URI_SERVICE
+    CRED_UPDATE --> CRED_SERVICE
+    FW_UPDATE --> UPDATE_SERVICE
+    PROTO_PARSER --> LOG_SERVICE
+    
+    %% 外部服务连接
+    HTTP_CONN --> CUPS_SERVER
+    FW_UPDATE --> FW_REPO
+    SIG_VERIFY --> CERT_AUTH
+    
+    %% 样式定义
+    classDef appClass fill:#e8f5e8,stroke:#2e7d32
+    classDef sessionClass fill:#e3f2fd,stroke:#1565c0
+    classDef stateClass fill:#fff3e0,stroke:#ef6c00
+    classDef dataClass fill:#f3e5f5,stroke:#7b1fa2
+    classDef sigClass fill:#e0f2f1,stroke:#00796b
+    classDef updateClass fill:#fce4ec,stroke:#c2185b
+    classDef connClass fill:#f1f8e9,stroke:#558b2f
+    classDef timerClass fill:#e8eaf6,stroke:#3f51b5
+    classDef moduleClass fill:#fff8e1,stroke:#ff8f00
+    classDef cryptoClass fill:#ffebee,stroke:#d32f2f
+    classDef systemClass fill:#fafafa,stroke:#616161
+    classDef serverClass fill:#e0f7fa,stroke:#00acc1
+    
+    class SYS,TC_MODULE,UPDATE_SYS appClass
+    class CUPS_SESSION,SESSION_INIT,SESSION_FREE,SESSION_START sessionClass
+    class STATE_INIT,STATE_REQ,STATE_URI,STATE_CRED,STATE_SIG,STATE_UPDATE,STATE_DONE,STATE_ERROR stateClass
+    class PROTO_PARSER,SEGMENT_HANDLER,LENGTH_PARSER,DATA_VALIDATOR dataClass
+    class SIG_STRUCT,SIG_VERIFY,HASH_CALC,ECDSA_VERIFY sigClass
+    class UPDATE_FLAGS,URI_UPDATE,CRED_UPDATE,FW_UPDATE,UPDATE_DECISION updateClass
+    class HTTP_CONN,TLS_SUPPORT,TIMEOUT_MGR,RETRY_LOGIC connClass
+    class SYNC_TIMER,DELAY_TIMER,CONN_TIMER,SCHEDULE_MGR timerClass
+    class HTTP_MODULE,TLS_MODULE,NET_MODULE moduleClass
+    class MBEDTLS,ECDSA_LIB,SHA512_LIB,BIGNUM_LIB cryptoClass
+    class URI_SERVICE,CRED_SERVICE,UPDATE_SERVICE,LOG_SERVICE systemClass
+    class CUPS_SERVER,FW_REPO,CERT_AUTH serverClass 

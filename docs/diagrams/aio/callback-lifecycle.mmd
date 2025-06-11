@@ -1,0 +1,36 @@
+stateDiagram-v2
+    [*] --> Created: aio_open()
+    
+    Created --> Active: 设置回调函数
+    Active --> Active: aio_set_rdfn/wrfn
+    Active --> Monitoring: 加入事件循环
+    
+    Monitoring --> ReadReady: select检测到可读
+    Monitoring --> WriteReady: select检测到可写
+    Monitoring --> TimerExpired: 定时器到期
+    
+    ReadReady --> ExecuteRead: 调用rdfn(aio)
+    WriteReady --> ExecuteWrite: 调用wrfn(aio)
+    TimerExpired --> ExecuteTimer: 调用tmr回调
+    
+    ExecuteRead --> CallbackResult: 回调函数执行
+    ExecuteWrite --> CallbackResult
+    ExecuteTimer --> CallbackResult
+    
+    CallbackResult --> ContinueMonitoring: 继续监控
+    CallbackResult --> ModifyCallback: 修改回调函数
+    CallbackResult --> DisableCallback: 禁用回调(NULL)
+    CallbackResult --> CloseConnection: 关闭连接
+    
+    ContinueMonitoring --> Monitoring
+    ModifyCallback --> Active
+    DisableCallback --> Paused
+    
+    Paused --> Active: 重新设置回调
+    Paused --> Closed: aio_close()
+    
+    CloseConnection --> Closed: aio_close()
+    Active --> Closed: aio_close()
+    Monitoring --> Closed: aio_close()
+    
+    Closed --> [*]: 句柄释放 

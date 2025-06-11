@@ -1,0 +1,82 @@
+graph TD
+    A["uj_iniDecoder<br/>初始化解码器"] --> B["设置JSON缓冲区边界<br/>json_beg/json_end"]
+    B --> C["重置嵌套层级nest_level=-1<br/>清空所有状态变量"]
+    
+    C --> D["uj_nextValue<br/>核心解析入口"]
+    D --> E["skipWsp<br/>跳过空白字符和注释"]
+    E --> F{"识别JSON类型"}
+    
+    F -->|"字符串"| G["parseString<br/>解析字符串和转义字符"]
+    F -->|"数字"| H["parseNumber<br/>解析整数/小数/科学计数法"]
+    F -->|"布尔值"| I["nextLit<br/>验证true/false字面量"]
+    F -->|"null"| J["nextLit<br/>验证null字面量"]
+    F -->|"对象{}"| K["标记UJ_OBJECT类型<br/>准备对象解析"]
+    F -->|"数组[]"| L["标记UJ_ARRAY类型<br/>准备数组解析"]
+    
+    G --> G1["处理转义字符<br/>换行 制表 引号 反斜杠"]
+    G1 --> G2["处理Unicode转义<br/>uXXXX转UTF-8"]
+    G2 --> G3["计算CRC校验值<br/>用于快速字符串匹配"]
+    G3 --> M["返回解析类型"]
+    
+    H --> H1["decDigits<br/>解析数字序列"]
+    H1 --> H2{"检查小数点和指数"}
+    H2 -->|"整数"| H3["设置UJ_SNUM/UJ_UNUM"]
+    H2 -->|"浮点数"| H4["设置UJ_FNUM<br/>科学计数法计算"]
+    H3 --> M
+    H4 --> M
+    
+    I --> I1["验证字面量完整性"]
+    I1 --> I2["设置布尔值dec->snum"]
+    I2 --> M
+    
+    J --> J1["验证null字面量"]
+    J1 --> J2["设置UJ_NULL类型"]
+    J2 --> M
+    
+    K --> K1["uj_enterObject<br/>进入对象解析"]
+    K1 --> K2["do_enter验证开括号"]
+    K2 --> K3["更新嵌套状态<br/>nest_level++"]
+    K3 --> K4["uj_nextField<br/>解析字段名"]
+    K4 --> K5["验证冒号分隔符"]
+    K5 --> K6["递归调用uj_nextValue<br/>解析字段值"]
+    K6 --> K7{"更多字段?"}
+    K7 -->|"是,遇到逗号"| K4
+    K7 -->|"否,遇到}"| K8["uj_exitObject<br/>退出对象"]
+    K8 --> M
+    
+    L --> L1["uj_enterArray<br/>进入数组解析"]
+    L1 --> L2["do_enter验证开括号"]
+    L2 --> L3["更新嵌套状态<br/>nest_level++"]
+    L3 --> L4["uj_nextSlot<br/>获取数组索引"]
+    L4 --> L5["递归调用uj_nextValue<br/>解析数组元素"]
+    L5 --> L6{"更多元素?"}
+    L6 -->|"是,遇到逗号"| L4
+    L6 -->|"否,遇到]"| L7["uj_exitArray<br/>退出数组"]
+    L7 --> M
+    
+    M --> N["类型安全的值提取"]
+    N --> N1["uj_int/uj_uint<br/>整数值提取"]
+    N --> N2["uj_bool<br/>布尔值提取"]
+    N --> N3["uj_str<br/>字符串值提取"]
+    N --> N4["uj_num<br/>数值提取"]
+    N --> N5["uj_eui<br/>EUI转换"]
+    N --> N6["uj_hexstr<br/>十六进制字符串"]
+    
+    N1 --> O["值验证和类型转换"]
+    N2 --> O
+    N3 --> O
+    N4 --> O
+    N5 --> O
+    N6 --> O
+    
+    O --> P["uj_assertEOF<br/>验证解析完整性"]
+    P --> Q["解析完成"]
+    
+    style A fill:#e1f5fe
+    style D fill:#f3e5f5
+    style G fill:#e8f5e8
+    style H fill:#fff3e0
+    style K fill:#fce4ec
+    style L fill:#f1f8e9
+    style M fill:#e0f2f1
+    style Q fill:#e8eaf6 

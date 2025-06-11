@@ -1,0 +1,132 @@
+graph TD
+    subgraph "CCA信道评估系统"
+        subgraph "CCA信息管理"
+            CCA_MSG["CCA消息结构<br/>struct cca_msg<br/>• magic: MAGIC_CCA_FREQ<br/>• infos[MAX_CCA_INFOS]"]
+            
+            CCA_INFO["CCA信息条目<br/>struct cca_info<br/>• freq: 频率(Hz)<br/>• beg: 开始时间<br/>• end: 结束时间"]
+            
+            MAGIC_CHECK["魔数检测<br/>freq_hz == 0xCCAFCCAF<br/>识别CCA控制消息"]
+        end
+        
+        subgraph "信道评估算法"
+            START_CCA["开始CCA评估<br/>cca(txtime, txfreq)<br/>输入发送时间和频率"]
+            
+            LOOP_START["循环遍历<br/>for(i=0; i<MAX_CCA_INFOS; i++)<br/>检查所有CCA条目"]
+            
+            CHECK_FREQ["频率匹配检查<br/>txfreq == cca_info[i].freq<br/>是否为相同频率"]
+            
+            CHECK_TIME["时间冲突检查<br/>txtime >= beg &&<br/>txtime <= end"]
+            
+            CONFLICT_FOUND["发现冲突<br/>return 0<br/>信道被占用"]
+            
+            NEXT_ENTRY["检查下一条目<br/>i++<br/>继续循环"]
+            
+            FREQ_ZERO["频率为0<br/>freq == 0<br/>列表结束标记"]
+            
+            CHANNEL_FREE["信道空闲<br/>return 1<br/>可以发送"]
+        end
+        
+        subgraph "CCA信息更新"
+            RECV_CCA["接收CCA消息<br/>read_socket()识别<br/>MAGIC_CCA_FREQ"]
+            
+            EXTRACT_INFO["提取CCA信息<br/>cca_msg = *(struct cca_msg*)<br/>从数据包解析"]
+            
+            UPDATE_LOCAL["更新本地CCA状态<br/>全局cca_msg变量<br/>覆盖旧信息"]
+            
+            ADVANCE_READ["推进读取索引<br/>rx_ridx += sizeof(packet)<br/>继续处理"]
+        end
+        
+        subgraph "发送时机决策"
+            TX_REQUEST["发送请求<br/>应用调用发送函数<br/>lgw_send/sx1301ar_send"]
+            
+            CALC_WINDOW["计算发送时间窗<br/>txbeg = now + offset<br/>txend = txbeg + airtime"]
+            
+            CCA_CHECK["执行CCA检查<br/>调用cca(txbeg, freq)<br/>评估信道状态"]
+            
+            CCA_RESULT{"CCA结果判断"}
+            
+            PROCEED_TX["允许发送<br/>继续发送流程<br/>设置tx_pkt"]
+            
+            REJECT_TX["拒绝发送<br/>返回LBT_ISSUE<br/>或-1错误码"]
+        end
+        
+        subgraph "时间轴示例"
+            TIMELINE["时间轴<br/>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━>"]
+            
+            OCCUPIED1["占用时段1<br/>freq=868100000<br/>beg=1000, end=2000<br/>████████████"]
+            
+            FREE_ZONE["空闲时段<br/>可发送区域<br/>░░░░░░░░░░░░"]
+            
+            OCCUPIED2["占用时段2<br/>freq=868300000<br/>beg=3000, end=4000<br/>████████████"]
+            
+            TX_ATTEMPT["发送尝试<br/>freq=868100000<br/>time=1500<br/>❌冲突"]
+            
+            TX_SUCCESS["发送成功<br/>freq=868100000<br/>time=2500<br/>✅通过"]
+        end
+    end
+    
+    subgraph "外部仿真环境"
+        SIM_SERVER["仿真服务器<br/>• 网络环境建模<br/>• 多节点干扰<br/>• 动态CCA更新<br/>• 实时冲突计算"]
+        
+        INTERFERENCE["干扰源模拟<br/>• 其他LoRa设备<br/>• WiFi/蓝牙干扰<br/>• 工业噪声<br/>• 动态变化"]
+        
+        CCA_GENERATOR["CCA信息生成<br/>• 实时分析<br/>• 频谱占用<br/>• 时间预测<br/>• 批量更新"]
+    end
+    
+    %% CCA信息管理连接
+    CCA_MSG --> CCA_INFO
+    CCA_INFO --> MAGIC_CHECK
+    
+    %% 信道评估算法连接
+    START_CCA --> LOOP_START
+    LOOP_START --> CHECK_FREQ
+    CHECK_FREQ -->|匹配| CHECK_TIME
+    CHECK_FREQ -->|不匹配| NEXT_ENTRY
+    CHECK_TIME -->|冲突| CONFLICT_FOUND
+    CHECK_TIME -->|无冲突| NEXT_ENTRY
+    NEXT_ENTRY --> FREQ_ZERO
+    FREQ_ZERO -->|是| CHANNEL_FREE
+    FREQ_ZERO -->|否| LOOP_START
+    
+    %% CCA信息更新连接
+    RECV_CCA --> EXTRACT_INFO
+    EXTRACT_INFO --> UPDATE_LOCAL
+    UPDATE_LOCAL --> ADVANCE_READ
+    
+    %% 发送时机决策连接
+    TX_REQUEST --> CALC_WINDOW
+    CALC_WINDOW --> CCA_CHECK
+    CCA_CHECK --> CCA_RESULT
+    CCA_RESULT -->|通过| PROCEED_TX
+    CCA_RESULT -->|拒绝| REJECT_TX
+    
+    %% 外部系统连接
+    SIM_SERVER --> CCA_GENERATOR
+    INTERFERENCE --> CCA_GENERATOR
+    CCA_GENERATOR --> RECV_CCA
+    
+    %% 时间轴连接
+    TIMELINE --> OCCUPIED1
+    TIMELINE --> FREE_ZONE
+    TIMELINE --> OCCUPIED2
+    OCCUPIED1 --> TX_ATTEMPT
+    FREE_ZONE --> TX_SUCCESS
+    
+    %% 样式定义
+    classDef ccaInfo fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    classDef algorithm fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    classDef update fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef decision fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px
+    classDef timeline fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
+    classDef external fill:#fce4ec,stroke:#ad1457,stroke-width:2px
+    classDef success fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef conflict fill:#ffebee,stroke:#c62828,stroke-width:2px
+    
+    class CCA_MSG,CCA_INFO,MAGIC_CHECK ccaInfo
+    class START_CCA,LOOP_START,CHECK_FREQ,CHECK_TIME,NEXT_ENTRY,FREQ_ZERO algorithm
+    class RECV_CCA,EXTRACT_INFO,UPDATE_LOCAL,ADVANCE_READ update
+    class TX_REQUEST,CALC_WINDOW,CCA_CHECK,CCA_RESULT decision
+    class TIMELINE,OCCUPIED1,FREE_ZONE,OCCUPIED2 timeline
+    class SIM_SERVER,INTERFERENCE,CCA_GENERATOR external
+    class PROCEED_TX,CHANNEL_FREE,TX_SUCCESS success
+    class CONFLICT_FOUND,REJECT_TX,TX_ATTEMPT conflict 

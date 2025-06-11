@@ -1,0 +1,73 @@
+graph TB
+    subgraph "系统初始化层"
+        A["sys_main<br/>主入口"] --> B["参数解析<br/>命令行和配置文件"]
+        B --> C["目录设置<br/>home/temp/web"]
+        C --> D["EUI配置<br/>设备标识"]
+        D --> E["日志初始化<br/>sys_iniLogging"]
+    end
+    
+    subgraph "运行时系统层"
+        E --> F["系统初始化<br/>sys_ini"]
+        F --> G["运行时初始化<br/>rt_ini"]
+        G --> H["时间同步初始化<br/>ts_iniTimesync"]
+        H --> I["异步IO初始化<br/>aio_ini"]
+    end
+    
+    subgraph "进程管理层"
+        I --> J{"运行模式"}
+        J -->|守护进程| K["startupDaemon<br/>守护进程管理"]
+        J -->|普通模式| L["startupMaster<br/>主进程启动"]
+        J -->|从进程| M["sys_startupSlave<br/>从进程启动"]
+        
+        K --> N["fork工作进程"]
+        N --> O["waitForWorker<br/>进程监控"]
+        O -->|进程死亡| K
+    end
+    
+    subgraph "服务启动层"
+        L --> P["startupMaster2<br/>服务启动"]
+        P --> Q["命令FIFO<br/>sys_enableCmdFIFO"]
+        P --> R["GPS服务<br/>sys_enableGPS"]
+        P --> S["TC服务<br/>sys_iniTC/sys_startTC"]
+        P --> T["CUPS服务<br/>sys_iniCUPS/sys_triggerCUPS"]
+        P --> U["Web服务<br/>sys_iniWeb"]
+    end
+    
+    subgraph "底层系统服务"
+        V["时间服务"] --> V1["sys_time<br/>单调时间"]
+        V --> V2["sys_utc<br/>UTC时间"]
+        V --> V3["sys_usleep<br/>微秒睡眠"]
+        
+        W["随机数服务"] --> W1["sys_seed<br/>安全随机数"]
+        W1 --> W2["/dev/urandom<br/>伪随机设备"]
+        W1 --> W3["/dev/random<br/>真随机设备"]
+        
+        X["进程服务"] --> X1["sys_findPids<br/>查找进程"]
+        X --> X2["sys_execCommand<br/>执行命令"]
+        X --> X3["killOldPid<br/>清理旧进程"]
+        
+        Y["固件更新"] --> Y1["sys_updateStart<br/>开始更新"]
+        Y --> Y2["sys_updateWrite<br/>写入数据"]
+        Y --> Y3["sys_updateCommit<br/>提交更新"]
+        Y --> Y4["sys_runUpdate<br/>执行更新"]
+    end
+    
+    subgraph "配置管理"
+        Z["配置解析"] --> Z1["parseStationConf<br/>解析station.conf"]
+        Z --> Z2["命令行参数<br/>argp_parse"]
+        Z --> Z3["环境变量<br/>getenv"]
+        
+        Z1 --> Z4["JSON解析<br/>uj_decode"]
+        Z4 --> Z5["字段处理<br/>routerid/log_file等"]
+    end
+    
+    P --> AA["事件循环<br/>aio_loop"]
+    AA --> BB["信号处理<br/>handle_signal"]
+    
+    style A fill:#e1f5fe
+    style P fill:#f3e5f5
+    style AA fill:#fff3e0
+    style V fill:#e8f5e8
+    style W fill:#fff8e1
+    style X fill:#fce4ec
+    style Y fill:#f1f8e9 

@@ -1,0 +1,108 @@
+graph TD
+    subgraph "JSON响应结构"
+        ROOT["{根对象}"]
+        CONFIG["config: [数组]"]
+        
+        subgraph "配置项对象结构"
+            ITEM1["{配置项1}"]
+            TYPE1["type: string"]
+            NAME1["name: string"] 
+            VALUE1["value: string"]
+            SRC1["src: string"]
+            
+            ITEM2["{配置项2}"]
+            TYPE2["type: string"]
+            NAME2["name: string"]
+            VALUE2["value: string"] 
+            SRC2["src: string"]
+            
+            ITEMN["{配置项N}"]
+            TYPEN["type: string"]
+            NAMEN["name: string"]
+            VALUEN["value: string"]
+            SRCN["src: string"]
+        end
+    end
+    
+    subgraph "字段说明"
+        F1["type: 配置参数的数据类型<br/>如 'string', 'int', 'bool'"]
+        F2["name: 配置参数名称<br/>如 'station_id', 'web_port'"]
+        F3["value: 配置参数当前值<br/>如 '8080', 'my-station'"]
+        F4["src: 配置参数来源<br/>如 'builtin', 'file', 'cmdline'"]
+    end
+    
+    subgraph "JSON响应示例"
+        EXAMPLE["<pre>{<br/>  'config': [<br/>    {<br/>      'type': 'int',<br/>      'name': 'web_port',<br/>      'value': '8080',<br/>      'src': 'file'<br/>    },<br/>    {<br/>      'type': 'string',<br/>      'name': 'station_id', <br/>      'value': 'my-station',<br/>      'src': 'builtin'<br/>    },<br/>    {<br/>      'type': 'string',<br/>      'name': 'home_dir',<br/>      'value': '/opt/station',<br/>      'src': 'cmdline' <br/>    }<br/>  ]<br/>}</pre>"]
+    end
+    
+    subgraph "配置来源类型"
+        SRC_BUILTIN["builtin: 内置默认值"]
+        SRC_FILE["file: 配置文件设置"]
+        SRC_CMDLINE["cmdline: 命令行参数"]
+        SRC_ENV["env: 环境变量"]
+        SRC_RUNTIME["runtime: 运行时动态设置"]
+    end
+    
+    subgraph "数据类型"
+        TYPE_STRING["string: 字符串类型"]
+        TYPE_INT["int: 整数类型"]
+        TYPE_BOOL["bool: 布尔类型"]
+        TYPE_FLOAT["float: 浮点数类型"]
+        TYPE_ARRAY["array: 数组类型"]
+    end
+    
+    %% 结构关系
+    ROOT --> CONFIG
+    CONFIG --> ITEM1
+    CONFIG --> ITEM2
+    CONFIG --> ITEMN
+    
+    ITEM1 --> TYPE1
+    ITEM1 --> NAME1
+    ITEM1 --> VALUE1
+    ITEM1 --> SRC1
+    
+    ITEM2 --> TYPE2
+    ITEM2 --> NAME2
+    ITEM2 --> VALUE2
+    ITEM2 --> SRC2
+    
+    ITEMN --> TYPEN
+    ITEMN --> NAMEN
+    ITEMN --> VALUEN
+    ITEMN --> SRCN
+    
+    %% 字段说明连接
+    TYPE1 -.-> F1
+    NAME1 -.-> F2
+    VALUE1 -.-> F3
+    SRC1 -.-> F4
+    
+    %% 来源类型说明
+    F4 -.-> SRC_BUILTIN
+    F4 -.-> SRC_FILE
+    F4 -.-> SRC_CMDLINE
+    F4 -.-> SRC_ENV
+    F4 -.-> SRC_RUNTIME
+    
+    %% 数据类型说明
+    F1 -.-> TYPE_STRING
+    F1 -.-> TYPE_INT
+    F1 -.-> TYPE_BOOL
+    F1 -.-> TYPE_FLOAT
+    F1 -.-> TYPE_ARRAY
+    
+    %% 样式定义
+    classDef jsonStructure fill:#e1f5fe
+    classDef configItem fill:#f3e5f5
+    classDef fieldDesc fill:#fff3e0
+    classDef example fill:#e8f5e8
+    classDef sourceType fill:#fce4ec
+    classDef dataType fill:#f1f8e9
+    
+    class ROOT,CONFIG jsonStructure
+    class ITEM1,ITEM2,ITEMN,TYPE1,NAME1,VALUE1,SRC1,TYPE2,NAME2,VALUE2,SRC2,TYPEN,NAMEN,VALUEN,SRCN configItem
+    class F1,F2,F3,F4 fieldDesc
+    class EXAMPLE example
+    class SRC_BUILTIN,SRC_FILE,SRC_CMDLINE,SRC_ENV,SRC_RUNTIME sourceType
+    class TYPE_STRING,TYPE_INT,TYPE_BOOL,TYPE_FLOAT,TYPE_ARRAY dataType 

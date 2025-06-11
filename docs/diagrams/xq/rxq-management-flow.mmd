@@ -1,0 +1,77 @@
+flowchart TD
+    START([接收帧到达]) --> NEXT_JOB[rxq_nextJob]
+    
+    %% 初始状态检查
+    NEXT_JOB --> CHECK_EMPTY{"队列是否为空<br/>first == next?"}
+    CHECK_EMPTY -->|"队列为空"| RESET_QUEUE["重置队列：<br/>• first = next = 0<br/>• 初始化第一个作业<br/>• 返回jobs[0]"]
+    
+    CHECK_EMPTY -->|"队列有数据"| CHECK_JOBS{"作业空间检查<br/>next >= MAX_RXJOBS?"}
+    
+    %% 作业空间管理
+    CHECK_JOBS -->|"空间充足"| CALC_DATA_POS["计算数据位置：<br/>• 获取最后作业<br/>• 计算数据结束位置<br/>• end = last->off + last->len"]
+    
+    CHECK_JOBS -->|"空间不足"| JOBS_COMPACT_CHECK{"是否可压缩<br/>first == 0?"}
+    JOBS_COMPACT_CHECK -->|"无法压缩"| JOBS_FULL[记录作业耗尽警告<br/>返回NULL]
+    JOBS_COMPACT_CHECK -->|"可以压缩"| JOBS_COMPACT["作业数组压缩：<br/>• 移动有效作业到开头<br/>• 调整first=0, next-=first<br/>• 回收前部空间"]
+    
+    JOBS_COMPACT --> CALC_DATA_POS
+    
+    %% 数据空间管理
+    CALC_DATA_POS --> CHECK_DATA_SPACE["数据空间检查：<br/>end + MAX_RXFRAME_LEN > MAX_RXDATA?"]
+    
+    CHECK_DATA_SPACE -->|"空间充足"| ALLOC_JOB["分配新作业：<br/>• last += 1<br/>• 设置数据偏移<br/>• 初始化字段<br/>• 返回作业指针"]
+    
+    CHECK_DATA_SPACE -->|"空间不足"| DATA_COMPACT_CHECK{"数据压缩检查<br/>jobs[first].off == 0?"}
+    DATA_COMPACT_CHECK -->|"无法压缩"| DATA_FULL[记录数据空间耗尽<br/>返回NULL]
+    
+    DATA_COMPACT_CHECK -->|"可以压缩"| DATA_COMPACT["数据缓冲区压缩：<br/>• 计算压缩偏移量<br/>• 移动有效数据到开头<br/>• 调整所有作业偏移<br/>• 回收前部空间"]
+    
+    DATA_COMPACT --> RECHECK_SPACE["重新检查空间<br/>goto check_rxdata"]
+    RECHECK_SPACE --> CHECK_DATA_SPACE
+    
+    %% 作业使用流程
+    ALLOC_JOB --> JOB_ALLOCATED[作业已分配]
+    RESET_QUEUE --> JOB_ALLOCATED
+    
+    JOB_ALLOCATED --> FILL_DATA["填充接收数据：<br/>• 复制帧数据<br/>• 设置接收参数<br/>• 更新数据长度"]
+    
+    FILL_DATA --> COMMIT_DECISION{"调用者决策"}
+    COMMIT_DECISION -->|"确认提交"| COMMIT_JOB[rxq_commitJob]
+    COMMIT_DECISION -->|"发生错误"| AUTO_ABANDON["自动废弃：<br/>• 作业保持预留状态<br/>• 下次分配时覆盖<br/>• 无需显式清理"]
+    
+    COMMIT_JOB --> COMMIT_DETAILS["提交操作：<br/>• 验证作业位置<br/>• next += 1<br/>• 作业正式入队"]
+    
+    %% 队列消费流程
+    COMMIT_DETAILS --> QUEUE_READY[队列准备消费]
+    QUEUE_READY --> CONSUME["消费者处理：<br/>• S2E序列化JSON<br/>• WebSocket转发<br/>• 更新first指针"]
+    
+    %% 特殊操作：删除作业
+    QUEUE_READY --> DROP_OPERATION[rxq_dropJob]
+    DROP_OPERATION --> DROP_DETAILS["删除操作：<br/>• 计算删除范围<br/>• 移动后续数据<br/>• 移动后续作业<br/>• 调整偏移量<br/>• next -= 1"]
+    
+    %% 循环处理
+    CONSUME --> CHECK_MORE{"还有更多帧?"}
+    DROP_DETAILS --> CHECK_MORE
+    CHECK_MORE -->|"有"| START
+    CHECK_MORE -->|"无"| END_PROCESS[处理完成]
+    
+    %% 错误路径
+    JOBS_FULL --> ERROR_HANDLE[错误处理]
+    DATA_FULL --> ERROR_HANDLE
+    AUTO_ABANDON --> ERROR_HANDLE
+    ERROR_HANDLE --> END_PROCESS
+    
+    %% 样式定义
+    classDef startStyle fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef processStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef decisionStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef compactStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef errorStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef successStyle fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    
+    class START,NEXT_JOB startStyle
+    class CALC_DATA_POS,ALLOC_JOB,RESET_QUEUE,FILL_DATA,COMMIT_JOB,COMMIT_DETAILS,CONSUME,DROP_DETAILS processStyle
+    class CHECK_EMPTY,CHECK_JOBS,CHECK_DATA_SPACE,JOBS_COMPACT_CHECK,DATA_COMPACT_CHECK,COMMIT_DECISION,CHECK_MORE decisionStyle
+    class JOBS_COMPACT,DATA_COMPACT,DROP_OPERATION compactStyle
+    class JOBS_FULL,DATA_FULL,AUTO_ABANDON,ERROR_HANDLE errorStyle
+    class JOB_ALLOCATED,QUEUE_READY,END_PROCESS successStyle 

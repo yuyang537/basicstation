@@ -2,6 +2,29 @@
  * --- Revised 3-Clause BSD License ---
  * Copyright Semtech Corporation 2022. All rights reserved.
  *
+ * GPS时间同步和定位模块
+ * ==================
+ * 
+ * 模块概述：
+ * 本模块实现了BasicStation的GPS集成功能，主要负责：
+ * 1. NMEA 0183协议解析 - 解析GPS设备输出的标准定位数据
+ * 2. UBX二进制协议支持 - 解析u-blox GPS模块的高精度时间数据
+ * 3. 设备连接管理 - 支持TTY串口和FIFO管道两种接口方式
+ * 4. 位置监控和报警 - 监测网关位置变化并发送告警信息
+ * 5. GPS状态事件处理 - 跟踪定位状态变化(fix/nofix/move)
+ * 
+ * 技术特点：
+ * - 异步IO处理：基于AIO事件循环的非阻塞数据读取
+ * - 智能重连机制：设备断线时自动重连，支持TTY和FIFO不同策略
+ * - 位置变化检测：高精度坐标比较，检测网关位置移动
+ * - 事件驱动架构：GPS状态变化触发事件通知到LNS服务器
+ * - 多协议支持：同时支持NMEA文本和UBX二进制协议
+ * - 错误恢复能力：垃圾数据过滤、校验和验证、设备冲突检测
+ * 
+ * 注意事项：
+ * GPS模块主要用于位置监控和状态报告，不直接用于时间同步。
+ * 时间同步通过PPS(每秒脉冲)信号和服务器协调完成，参见timesync.c模块。
+ *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
  *
@@ -26,16 +49,26 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+// ================================================================================
+// GPS功能编译控制
+// ================================================================================
+
 #if defined(CFG_nogps)
+// 如果编译时禁用了GPS功能，提供空实现
 
 #include "rt.h"
 
+// 函数功能：GPS功能禁用时的空实现
+// 参数说明：_device - GPS设备路径(未使用)
+// 返回值：0表示GPS功能不可用
+// 调用时机：系统初始化时如果配置中禁用了GPS功能
 int sys_enableGPS (str_t _device) {
-    LOG(MOD_GPS|ERROR, "GPS function not compiled.");
-    return 0;
+    LOG(MOD_GPS|ERROR, "GPS function not compiled.");  // 记录GPS功能未编译的错误
+    return 0;                                           // 返回失败状态
 }
 
 #else // ! defined(CFG_nogps)
+// GPS功能完整实现
 
 #include <unistd.h>
 #include <fcntl.h>

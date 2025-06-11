@@ -1,0 +1,81 @@
+graph TB
+    subgraph "S2配置系统架构 (Station-to-Server Configuration)"
+        A[s2conf_ini<br/>配置系统初始化] --> B[conf_params数组<br/>配置参数定义]
+        B --> C[内置默认值设置<br/>builtin值]
+        C --> D[环境变量覆盖<br/>环境变量读取]
+        D --> E[命令行参数覆盖<br/>cmdline参数]
+        E --> F[配置文件覆盖<br/>config文件]
+        
+        B --> G[解析函数集合]
+        G --> G1[parse_bool<br/>布尔值解析]
+        G --> G2[parse_u4<br/>整数解析]
+        G --> G3[parse_str<br/>字符串解析]
+        G --> G4[parse_tspan_*<br/>时间跨度解析]
+        G --> G5[parse_size_*<br/>大小解析]
+        
+        H[s2conf_set<br/>参数设置] --> G
+        I[s2conf_get<br/>参数查询] --> B
+        J[s2conf_printAll<br/>调试输出] --> B
+    end
+    
+    subgraph "S2E协议架构 (Station-to-Server Engine)"
+        K[s2e_ini<br/>S2E初始化] --> L[s2ctx_t<br/>协议上下文]
+        L --> M[接收队列<br/>rxq_ini]
+        L --> N[发送队列<br/>txq_ini]
+        L --> O[定时器初始化<br/>发送/信标定时器]
+        
+        M --> P[接收处理]
+        P --> P1[s2e_addRxjob<br/>添加接收任务]
+        P --> P2[镜像帧检测<br/>重复帧过滤]
+        P --> P3[s2e_flushRxjobs<br/>转发上行数据]
+        
+        N --> Q[发送处理]
+        Q --> Q1[s2e_addTxjob<br/>添加发送任务]
+        Q --> Q2[占空比检查<br/>DC控制]
+        Q --> Q3[s2e_nextTxAction<br/>调度发送]
+        
+        O --> R[定时器处理]
+        R --> R1[s2e_txtimeout<br/>发送超时]
+        R --> R2[s2e_bcntimeout<br/>信标超时]
+        
+        S[空中时间计算] --> S1[s2e_calcUpAirTime<br/>上行时间]
+        S --> S2[s2e_calcDnAirTime<br/>下行时间]
+        S --> S3[_calcAirTime<br/>通用算法]
+    end
+    
+    subgraph "消息处理架构"
+        T[s2e_onMsg<br/>JSON消息处理] --> T1[handle_router_config<br/>路由配置]
+        T --> T2[handle_dnframe<br/>下行帧]
+        T --> T3[handle_dnmsg<br/>下行消息] 
+        T --> T4[handle_dnsched<br/>下行调度]
+        T --> T5[handle_timesync<br/>时间同步]
+        T --> T6[handle_getxtime<br/>时间查询]
+        T --> T7[handle_runcmd<br/>命令执行]
+        
+        U[s2e_onBinary<br/>二进制消息] --> U1[s2e_handleRmtsh<br/>远程Shell]
+    end
+    
+    subgraph "区域特定功能"
+        V[区域配置] --> V1[EU868占空比<br/>s2e_canTxEU868]
+        V --> V2[每信道占空比<br/>s2e_canTxPerChnlDC]
+        V --> V3[频段映射<br/>freq2band]
+        V --> V4[功率控制<br/>calcTxpow]
+    end
+    
+    %% 数据流连接
+    A -.->|配置参数| K
+    L -.->|获取配置| I
+    P3 -.->|上行数据| WebSocket[WebSocket连接<br/>到LNS]
+    T -.->|下行指令| Q
+    V -.->|监管限制| Q2
+    
+    %% 样式定义
+    classDef configNode fill:#e1f5fe
+    classDef protocolNode fill:#f3e5f5
+    classDef msgNode fill:#e8f5e8
+    classDef regionNode fill:#fff3e0
+    
+    class A,B,C,D,E,F,G,G1,G2,G3,G4,G5,H,I,J configNode
+    class K,L,M,N,O,P,P1,P2,P3,Q,Q1,Q2,Q3,R,R1,R2,S,S1,S2,S3 protocolNode
+    class T,T1,T2,T3,T4,T5,T6,T7,U,U1 msgNode
+    class V,V1,V2,V3,V4 regionNode 

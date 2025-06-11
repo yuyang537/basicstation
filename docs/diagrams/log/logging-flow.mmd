@@ -1,0 +1,82 @@
+sequenceDiagram
+    participant App as 应用程序
+    participant LogAPI as 日志API层
+    participant LogCore as 日志核心
+    participant SysLog as 系统日志层
+    participant Thread as 后台线程
+    participant File as 文件系统
+    
+    Note over App, File: BasicStation日志处理完整流程
+    
+    %% 正常日志调用流程
+    App->>LogAPI: LOG(MOD_RAL|INFO, "消息", args)
+    LogAPI->>LogCore: log_msg(mod_level, fmt, ...)
+    LogCore->>LogCore: log_shallLog(mod_level)<br/>检查级别过滤
+    
+    alt 级别满足要求
+        LogCore->>LogCore: log_header(mod_level)<br/>生成时间戳+模块标识
+        LogCore->>LogCore: vxprintf(logbuf, fmt, args)<br/>格式化消息内容
+        LogCore->>LogCore: log_flush()<br/>添加换行符和结束符
+        LogCore->>SysLog: sys_addLog(logbuf, len)
+        
+        alt 后台线程未启动
+            SysLog->>SysLog: addLog(直接模式)
+            SysLog->>File: writeLogData(同步写入)
+        else 异步模式
+            SysLog->>SysLog: addLog(异步模式)
+            SysLog->>SysLog: 复制到outbuf缓冲区
+            
+            alt 缓冲区达到高水位
+                SysLog->>Thread: pthread_cond_signal<br/>立即唤醒后台线程
+            else 正常写入
+                SysLog->>SysLog: 设置延迟定时器(100ms)
+            end
+        end
+    else 级别不满足
+        LogCore-->>App: 直接返回(跳过处理)
+    end
+    
+    %% 后台线程处理
+    Note over Thread, File: 后台异步写入流程
+    Thread->>Thread: pthread_cond_wait<br/>等待唤醒信号
+    Thread->>SysLog: 获取outbuf数据长度
+    Thread->>File: writeLogData(批量写入)
+    
+    alt 文件大小超限
+        File->>File: 检查日志文件大小
+        File->>File: 查找最佳轮转文件编号
+        File->>File: unlink(旧轮转文件)
+        File->>File: rename(当前文件->轮转文件)
+    end
+    
+    File->>File: open(日志文件, 追加模式)
+    File->>File: write(日志数据)
+    File->>File: close(文件描述符)
+    
+    %% 标准输出重定向流程
+    Note over App, SysLog: 标准输出捕获流程
+    App->>App: printf("调试信息\\n")
+    App->>SysLog: stdout管道(重定向)
+    SysLog->>SysLog: stdout_read(异步读取)
+    SysLog->>SysLog: 按行分割数据
+    SysLog->>LogCore: log_special(MOD_SIO|INFO)<br/>获取日志头部
+    SysLog->>SysLog: 组合头部+内容
+    SysLog->>SysLog: addLog(完整日志行)
+    
+    %% 错误降级处理
+    Note over SysLog, File: 错误处理与降级
+    alt 文件操作失败
+        File-->>SysLog: 返回错误
+        SysLog->>SysLog: 输出错误信息到stderr
+        SysLog->>SysLog: goto log2stderr
+        SysLog->>File: write(orig_stderr, 降级输出)
+    end
+    
+    %% 强制刷新流程
+    Note over App, File: 程序退出时的强制刷新
+    App->>LogCore: log_flushIO()(强制刷新)
+    LogCore->>SysLog: sys_addLog(buf, 0)<br/>长度0触发刷新
+    SysLog->>SysLog: sys_flushLog()
+    SysLog->>SysLog: fflush(stdout/stderr)
+    SysLog->>Thread: 获取互斥锁，同步写入
+    SysLog->>File: writeLogData(全部缓冲数据) 

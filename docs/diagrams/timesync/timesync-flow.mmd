@@ -1,0 +1,60 @@
+flowchart TD
+    A[系统启动] --> B[ts_iniTimesync初始化]
+    B --> C[等待SX130X芯片同步]
+    
+    C --> D[ts_updateTimesync<br/>MCU-SX130X同步]
+    D --> E{同步质量检查}
+    E -->|质量不达标| F[拒绝同步<br/>等待下次测量]
+    E -->|质量合格| G[计算晶振漂移]
+    
+    G --> H[更新漂移统计]
+    H --> I{漂移超过阈值?}
+    I -->|是| J[增加过度漂移计数<br/>加快同步频率]
+    I -->|否| K[检查PPS信号]
+    
+    K --> L{PPS信号有效?}
+    L -->|无PPS| M[仅MCU-SX130X同步<br/>返回标准间隔]
+    L -->|有PPS| N[验证PPS时间戳]
+    
+    N --> O{PPS验证通过?}
+    O -->|失败| P[记录PPS错误<br/>继续等待]
+    O -->|成功| Q[更新PPS同步状态]
+    
+    Q --> R[计算PPS偏移]
+    R --> S{首次PPS同步?}
+    S -->|是| T[启动LNS时间同步<br/>onTimesyncLns]
+    S -->|否| U[更新PPS偏移<br/>校正UTC时间]
+    
+    T --> V[发送timesync请求到LNS]
+    V --> W[等待服务器响应]
+    W --> X[ts_processTimesyncLns<br/>处理服务器响应]
+    
+    X --> Y{计算GPS时间标签}
+    Y -->|成功| Z[建立gpsOffset<br/>完成全局时间基准]
+    Y -->|失败| AA[继续发送同步请求]
+    
+    U --> BB[调整同步时间到<br/>PPS脉冲中间]
+    BB --> CC[更新GPS偏移<br/>基于秒数变化]
+    
+    Z --> DD[时间转换功能可用:<br/>GPS↔SX130X↔MCU]
+    CC --> DD
+    M --> EE[下次同步调度]
+    P --> EE
+    J --> EE
+    AA --> EE
+    
+    EE --> D
+    
+    DD --> FF[提供时间服务:<br/>• ts_gpstime2xtime<br/>• ts_xtime2gpstime<br/>• ts_ustime2xtime<br/>• ts_xtime2ustime<br/>• ts_xtime2xtime]
+    
+    classDef initClass fill:#e1f5fe
+    classDef syncClass fill:#f3e5f5
+    classDef ppsClass fill:#e8f5e8
+    classDef lnsClass fill:#fff3e0
+    classDef serviceClass fill:#fce4ec
+    
+    class A,B,C initClass
+    class D,E,F,G,H,I,J,K,M,EE syncClass
+    class L,N,O,P,Q,R,S,U,BB,CC ppsClass
+    class T,V,W,X,Y,Z,AA lnsClass
+    class DD,FF serviceClass 

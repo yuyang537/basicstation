@@ -1,393 +1,464 @@
 /*
+ * BasicStation 文件系统模拟模块 - 基于Flash的日志结构化文件系统
+ * 
+ * 主要功能：
+ * 1. Flash存储管理 - 基于双分区的日志结构化存储系统
+ * 2. 文件操作接口 - 提供标准POSIX兼容的文件操作API
+ * 3. 垃圾回收机制 - 自动空间回收和数据迁移系统
+ * 4. 数据加密保护 - 基于密钥的Flash数据加密存储
+ * 5. 记录管理系统 - 基于标签的记录格式和完整性检验
+ * 
+ * 设计特点：
+ * - 日志结构化：所有操作追加写入，支持快速恢复
+ * - 双分区设计：A/B分区轮换，保证数据安全性
+ * - 垃圾回收：Copy-GC算法，只复制活跃数据
+ * - 数据加密：位置相关的XOR加密保护
+ * - 完整性校验：CRC校验保证数据完整性
+ * - POSIX兼容：标准文件操作接口，易于移植
+ * 
  * --- Revised 3-Clause BSD License ---
  * Copyright Semtech Corporation 2022. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- *
- *     * Redistributions of source code must retain the above copyright notice,
- *       this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright notice,
- *       this list of conditions and the following disclaimer in the documentation
- *       and/or other materials provided with the distribution.
- *     * Neither the name of the Semtech corporation nor the names of its
- *       contributors may be used to endorse or promote products derived from this
- *       software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL SEMTECH CORPORATION. BE LIABLE FOR ANY DIRECT,
- * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdio.h>
-#include <fcntl.h>
-
+#include <stdio.h>                       // 标准输入输出接口
+#include <fcntl.h>                       // 文件控制接口
 
 #if defined(CFG_linux) || defined(CFG_flashsim)
-#include <sys/stat.h>
-#include <errno.h>
-#include <stdarg.h>
-#include <unistd.h>
+#include <sys/stat.h>                    // 文件状态结构
+#include <errno.h>                       // 错误码定义
+#include <stdarg.h>                      // 可变参数支持
+#include <unistd.h>                      // UNIX标准接口
 #endif // defined(CFG_linux)
-#include "s2conf.h"
-#include "rt.h"
-#include "kwcrc.h"
-#include "uj.h"
-#include "fs.h"
+#include "s2conf.h"                      // 系统配置定义
+#include "rt.h"                          // 运行时支持
+#include "kwcrc.h"                       // CRC校验算法
+#include "uj.h"                          // JSON解析支持
+#include "fs.h"                          // 文件系统接口定义
 
-// Flash is organized in 32bit words
-// Whole/part is split up into two sections.
-// If one section is full, a GC collection copies over
-// only live data to the other section.
-// A section consists of an magic + GC seq counter
-// Each GC increments the sequence counter.
-// Given two section magics is is clear which one is older.
+// ================================================================================
+// Flash文件系统存储布局设计
+// ================================================================================
 //
-// After the section magic follow records:
+// Flash组织结构：
+// - 以32位字为基本存储单元
+// - 整个Flash分区划分为两个相等的分区(A/B)
+// - 当一个分区写满时，垃圾回收将活跃数据复制到另一个分区
+// 
+// 分区结构：
+// - 分区头：魔数(FLASH_MAGIC) + GC序列计数器
+// - 每次GC操作递增序列计数器
+// - 通过比较两个分区的魔数可确定哪个分区更新
 //
-// [begtag] ... [endtag]
+// 记录格式：
+// [开始标签] ... [结束标签]
 //
-// They can be travered forward and backward.
-// begtag/endtag both contain a length.
-// begtag carries an ino number.
-// ino numbers are increasing and are reset/relabeled during GC.
-// endtag has a CRC.
+// 记录可以正向和反向遍历：
+// - 开始标签/结束标签都包含长度信息
+// - 开始标签携带inode编号
+// - inode编号递增分配，GC时重新标记
+// - 结束标签包含CRC校验码
 //
-// [begtag] [fncrc] [ctim]   [filename                 '\0'{1,4}] [endtag]   FILE/DELETE
-// [begtag] [fncrc] [fncrc2] [filename1 '\0' filename2 '\0'{1,4}] [endtag]   RENAME
-// [begtag] [data0] [data1] ... [dataN '\0'{0,3}]                 [endtag]   DATA
+// 记录类型：
+// FILE/DELETE: [开始标签] [文件名CRC] [创建时间] [文件名'\0'{1,4}] [结束标签]
+// RENAME:      [开始标签] [旧名CRC] [新名CRC] [旧名'\0'新名'\0'{1,4}] [结束标签]
+// DATA:        [开始标签] [数据0] [数据1] ... [数据N'\0'{0,3}] [结束标签]
 //
-// For DATA records the number pad bytes is indicated in endtag.
-// pad(begtag) is always 0 for all records.
-// pad(endtag) is zero for FILE/DELETE/RENAME.
+// 填充说明：
+// - DATA记录的填充字节数在结束标签中指示
+// - 开始标签的填充字节始终为0
+// - FILE/DELETE/RENAME的结束标签填充字节为0
 //
-// End of GC is marked with a FILE record and a filename word 002f2f00 and
-// fncrc=0 ctime=0.
+// GC结束标记：
+// - 使用FILE记录标记，文件名为特殊字符串002f2f00
+// - fncrc=0, ctime=0
 //
 
 
 
-// Make our file handles different from system ones (just safety)
-#define OFF_FD 0x10000
-#define MAX_INO 0x3FFF
-#define CRC_INI 0x1234
+// ================================================================================
+// 文件系统常量定义
+// ================================================================================
 
-#define FLASH_MAGIC 0xA4B5
-#define FLASH_BEG_A (FLASH_ADDR  + FLASH_PAGE_SIZE * FS_PAGE_START)
-#define FLASH_BEG_B (FLASH_BEG_A + FLASH_PAGE_SIZE * (FS_PAGE_CNT/2))
-#define FLASH_END_A (FLASH_BEG_B)
-#define FLASH_END_B (FLASH_BEG_B + FLASH_PAGE_SIZE * (FS_PAGE_CNT/2))
+// 文件句柄偏移量 - 使文件句柄与系统句柄区分开（安全考虑）
+#define OFF_FD 0x10000              // 文件描述符偏移量，避免与系统FD冲突
+#define MAX_INO 0x3FFF              // 最大inode编号（14位）
+#define CRC_INI 0x1234              // CRC计算初始值
 
-static inline u1_t FSTAG_cmd(u4_t v) { return  (v >> 30) & 3; }
-static inline u2_t FSTAG_ino(u4_t v) { return ((v >> 16) & MAX_INO); }
-static inline u2_t FSTAG_crc(u4_t v) { return ((v >> 16) & 0xFFFF); }
-static inline u2_t FSTAG_len(u4_t v) { return   v & 0xFFFC; }
-static inline u1_t FSTAG_pad(u4_t v) { return   v & 3; }
+// Flash分区布局定义
+#define FLASH_MAGIC 0xA4B5          // Flash分区魔数
+#define FLASH_BEG_A (FLASH_ADDR  + FLASH_PAGE_SIZE * FS_PAGE_START)     // A分区起始地址
+#define FLASH_BEG_B (FLASH_BEG_A + FLASH_PAGE_SIZE * (FS_PAGE_CNT/2))   // B分区起始地址
+#define FLASH_END_A (FLASH_BEG_B)                                       // A分区结束地址
+#define FLASH_END_B (FLASH_BEG_B + FLASH_PAGE_SIZE * (FS_PAGE_CNT/2))   // B分区结束地址
 
+// ================================================================================
+// 文件系统标签操作宏定义
+// ================================================================================
+
+// 标签字段提取函数 - 从32位标签中提取各个字段
+static inline u1_t FSTAG_cmd(u4_t v) { return  (v >> 30) & 3; }      // 提取命令类型（2位）
+static inline u2_t FSTAG_ino(u4_t v) { return ((v >> 16) & MAX_INO); } // 提取inode号（14位）
+static inline u2_t FSTAG_crc(u4_t v) { return ((v >> 16) & 0xFFFF); } // 提取CRC值（16位）
+static inline u2_t FSTAG_len(u4_t v) { return   v & 0xFFFC; }         // 提取长度（14位，4字节对齐）
+static inline u1_t FSTAG_pad(u4_t v) { return   v & 3; }              // 提取填充字节数（2位）
+
+// 标签构造函数 - 将各字段组合成32位标签
+// 功能：构造开始标签 - 包含命令类型、inode号、长度、填充信息
 static inline u4_t FSTAG_mkBeg(u1_t cmd, u2_t ino, u2_t len, u1_t pad) {
     return (cmd<<30) | ((ino&MAX_INO)<<16) | (len&0xFFFC) | (pad&3);
 }
 
+// 功能：构造结束标签 - 包含CRC校验、长度、填充信息
 static inline u4_t FSTAG_mkEnd(u2_t crc, u2_t len, u1_t pad) {
     return ((crc&0xFFFF)<<16) | (len&0xFFFC)|(pad&3);
 }
 
-#define FSCMD_FILE   0
-#define FSCMD_DATA   1
-#define FSCMD_RENAME 2
-#define FSCMD_DELETE 3
+// 文件系统命令类型定义
+#define FSCMD_FILE   0              // 文件创建命令
+#define FSCMD_DATA   1              // 数据写入命令
+#define FSCMD_RENAME 2              // 文件重命名命令
+#define FSCMD_DELETE 3              // 文件删除命令
 
+// ================================================================================
+// 文件系统核心数据结构
+// ================================================================================
+
+// 文件上下文结构 - 用于记录遍历和操作
 typedef struct fctx {
-    u4_t faddr;
-    u4_t begtag;
-    u4_t endtag;
+    u4_t faddr;                     // 当前记录的Flash地址
+    u4_t begtag;                    // 开始标签值
+    u4_t endtag;                    // 结束标签值
 } fctx_t;
 
+// 文件句柄结构 - 描述打开的文件状态
 typedef struct fh {
-    u2_t ino;
-    u2_t droff;   // offset inside data record
-    u4_t faddr;
-    u4_t foff;    // file read offset
+    u2_t ino;                       // 文件inode编号
+    u2_t droff;                     // 数据记录内偏移量
+    u4_t faddr;                     // 当前数据记录Flash地址
+    u4_t foff;                      // 文件读取偏移量
 } fh_t;
 
-
+// inode缓存结构 - 垃圾回收时使用的文件信息缓存
 struct ino_cache {
-    u4_t faddrFile;   // creating FILE record
-    u4_t faddrRename; // last rename
-    u4_t fncrc;
+    u4_t faddrFile;                 // 创建FILE记录的地址
+    u4_t faddrRename;               // 最后一次重命名记录的地址
+    u4_t fncrc;                     // 文件名CRC值
 };
 
+// ================================================================================
+// 辅助缓冲区定义
+// ================================================================================
 
-#define AUXBUF_SZW (2*((FS_MAX_FNSIZE+3)/4))
-#define AUXBUF_SZ4 (4*AUXBUF_SZW)
+// 辅助缓冲区大小计算（支持最大文件名长度的2倍，4字节对齐）
+#define AUXBUF_SZW (2*((FS_MAX_FNSIZE+3)/4))    // 以32位字为单位的大小
+#define AUXBUF_SZ4 (4*AUXBUF_SZW)               // 以字节为单位的大小
 
+// 多用途辅助缓冲区 - 用于临时数据存储和格式转换
 static union auxbuf {
-    u4_t u4[AUXBUF_SZW];
-    u1_t u1[AUXBUF_SZ4];
+    u4_t u4[AUXBUF_SZW];            // 按32位字访问
+    u1_t u1[AUXBUF_SZ4];            // 按字节访问
 } auxbuf;
 
+// ================================================================================
+// 全局状态变量
+// ================================================================================
 
+static fctx_t fctxCache;            // 文件上下文缓存
+static u4_t   flashKey[4];          // Flash加密密钥（4个32位字）
+static u4_t   flashWP;              // Flash写指针（当前写入位置）
+static u2_t   nextIno;              // 下一个可用的inode编号
+static s1_t   fsSection = -1;       // 当前活跃分区标识（0|1，-1表示未初始化）
+static const char DEFAULT_CWD[] = "/s2/";  // 默认工作目录
+static str_t  cwd = DEFAULT_CWD;    // 当前工作目录指针
+static fh_t   fhTable[FS_MAX_FD];   // 文件句柄表
 
-static fctx_t fctxCache;
-static u4_t   flashKey[4];
-static u4_t   flashWP;
-static u2_t   nextIno;
-static s1_t   fsSection = -1;   // 0|1, -1 no fs_ini called yet
-static const char DEFAULT_CWD[] = "/s2/";
-static str_t  cwd = DEFAULT_CWD;
-static fh_t   fhTable[FS_MAX_FD];
+// ================================================================================
+// Flash分区管理函数
+// ================================================================================
 
+// 功能：获取当前活跃分区的起始地址
+// 返回值：当前分区数据区起始地址（跳过4字节的分区头）
+// 调用时机：所有Flash读写操作前确定地址范围
 static inline u4_t flashFsBeg() {
     return fsSection ? FLASH_BEG_B+4 : FLASH_BEG_A+4;
 }
 
+// 功能：获取当前活跃分区的最大地址
+// 返回值：当前分区的结束地址
+// 调用时机：检查Flash空间边界时
 static inline u4_t flashFsMax() {
     return fsSection ? FLASH_END_B : FLASH_END_A;
 }
 
+// ================================================================================
+// 数据加密/解密系统
+// ================================================================================
+
+// 功能：单字数据加密 - 基于Flash地址的位置相关加密
+// 参数：faddr - Flash地址，data - 待加密数据
+// 返回值：加密后的数据
+// 调用时机：向Flash写入数据前进行加密
+// 加密算法：使用Flash地址选择密钥进行XOR加密
 static u4_t encrypt1 (u4_t faddr, u4_t data) {
-    return data ^ flashKey[(faddr>>2) & 3];
+    return data ^ flashKey[(faddr>>2) & 3];  // 根据地址选择4个密钥之一进行XOR
 }
 
+// 功能：单字数据解密 - 解密函数与加密函数相同（XOR特性）
+// 参数：faddr - Flash地址，data - 待解密数据
+// 返回值：解密后的数据
+// 调用时机：从Flash读取数据后进行解密
 static u4_t decrypt1 (u4_t faddr, u4_t data) {
-    return encrypt1(faddr, data);
+    return encrypt1(faddr, data);            // XOR加密的逆运算就是自身
 }
 
+// 功能：多字数据加密 - 批量加密连续的数据块
+// 参数：faddr - 起始Flash地址，data - 数据缓冲区，u4cnt - 32位字数量
+// 返回值：无（就地加密）
+// 调用时机：批量写入Flash数据前
 static void encryptN (u4_t faddr, u4_t* data, uint u4cnt) {
     for( uint u=0; u<u4cnt; u++ ) {
-        data[u] = encrypt1(faddr+u*4, data[u]);
+        data[u] = encrypt1(faddr+u*4, data[u]);  // 逐字加密，地址递增
     }
 }
 
+// 功能：多字数据解密 - 批量解密连续的数据块
+// 参数：faddr - 起始Flash地址，data - 数据缓冲区，u4cnt - 32位字数量
+// 返回值：无（就地解密）
+// 调用时机：批量读取Flash数据后
 static void decryptN (u4_t faddr, u4_t* data, uint u4cnt) {
     for( uint u=0; u<u4cnt; u++ ) {
-        data[u] = decrypt1(faddr+u*4, data[u]);
+        data[u] = decrypt1(faddr+u*4, data[u]);  // 逐字解密，地址递增
     }
 }
 
+// ================================================================================
+// Flash读写接口函数
+// ================================================================================
+
+// 功能：写入单个32位字到Flash - 带地址检查和加密
+// 参数：faddr - 目标Flash地址，data - 待写入数据
+// 返回值：无
+// 调用时机：写入单个数据字时
 void wrFlash1 (u4_t faddr, u4_t data) {
-    assert(faddr < (faddr >= FLASH_BEG_B ? FLASH_END_B : FLASH_END_A));
-    data = encrypt1(faddr, data);
-    sys_writeFlash(faddr, &data, 1);
+    assert(faddr < (faddr >= FLASH_BEG_B ? FLASH_END_B : FLASH_END_A));  // 检查地址边界
+    data = encrypt1(faddr, data);        // 加密数据
+    sys_writeFlash(faddr, &data, 1);     // 调用系统接口写入
 }
 
+// 功能：按写指针位置写入数据 - 自动更新写指针
+// 参数：data - 待写入数据
+// 返回值：无
+// 调用时机：顺序写入文件系统记录时
 static void wrFlash1wp (u4_t data) {
-    u4_t faddr = flashWP;
-    wrFlash1(faddr, data);
-    flashWP = faddr + 4;
+    u4_t faddr = flashWP;                // 获取当前写指针
+    wrFlash1(faddr, data);               // 写入数据
+    flashWP = faddr + 4;                 // 更新写指针到下一个位置
 }
 
+// 功能：从Flash读取单个32位字 - 带解密
+// 参数：faddr - 源Flash地址
+// 返回值：解密后的数据
+// 调用时机：读取单个数据字时
 u4_t rdFlash1 (u4_t faddr) {
     u4_t data;
-    assert(faddr < flashFsMax());
-    sys_readFlash(faddr, &data, 1);
-    return decrypt1(faddr, data);
+    assert(faddr < flashFsMax());        // 检查地址边界
+    sys_readFlash(faddr, &data, 1);      // 调用系统接口读取
+    return decrypt1(faddr, data);        // 解密并返回数据
 }
 
+// 功能：批量写入多个32位字到Flash - 带加密和可选数据保持
+// 参数：faddr - 目标Flash地址，daddr - 数据缓冲区，u4cnt - 字数量，keepData - 是否保持原数据
+// 返回值：无
+// 调用时机：批量写入大量数据时
 void wrFlashN (u4_t faddr, u4_t* daddr, uint u4cnt, int keepData) {
-    assert(faddr + u4cnt*4 <= (faddr >= FLASH_BEG_B ? FLASH_END_B : FLASH_END_A));
-    encryptN(faddr, daddr, u4cnt);
-    sys_writeFlash(faddr, daddr, u4cnt);
-    if( keepData )
-        decryptN(faddr, daddr, u4cnt);
+    assert(faddr + u4cnt*4 <= (faddr >= FLASH_BEG_B ? FLASH_END_B : FLASH_END_A));  // 检查边界
+    encryptN(faddr, daddr, u4cnt);       // 批量加密数据
+    sys_writeFlash(faddr, daddr, u4cnt); // 调用系统接口批量写入
+    if( keepData )                       // 如果需要保持原数据
+        decryptN(faddr, daddr, u4cnt);   // 恢复原数据（解密回来）
 }
 
-
+// 功能：按写指针批量写入数据 - 自动更新写指针
+// 参数：daddr - 数据缓冲区，u4cnt - 字数量，keepData - 是否保持原数据
+// 返回值：无
+// 调用时机：顺序批量写入文件系统记录时
 static void wrFlashNwp (u4_t* daddr, uint u4cnt, int keepData) {
-    u4_t faddr = flashWP;
-    wrFlashN (faddr, daddr, u4cnt, keepData);
-    flashWP = faddr + u4cnt*4;
+    u4_t faddr = flashWP;                // 获取当前写指针
+    wrFlashN(faddr, daddr, u4cnt, keepData);  // 批量写入
+    flashWP = faddr + u4cnt*4;           // 更新写指针
 }
 
+// 功能：从Flash批量读取数据 - 带解密
+// 参数：faddr - 源Flash地址，daddr - 数据缓冲区，u4cnt - 字数量
+// 返回值：无
+// 调用时机：批量读取大量数据时
 void rdFlashN(u4_t faddr, u4_t* daddr, uint u4cnt) {
-    assert(faddr + u4cnt*4 <= flashFsMax());
-    sys_readFlash(faddr, daddr, u4cnt);
-    decryptN(faddr, daddr, u4cnt);
+    assert(faddr + u4cnt*4 <= flashFsMax());  // 检查地址边界
+    sys_readFlash(faddr, daddr, u4cnt);  // 调用系统接口批量读取
+    decryptN(faddr, daddr, u4cnt);       // 批量解密数据
 }
 
 
+// ================================================================================
+// 文件上下文操作函数
+// ================================================================================
+
+// 功能：获取文件上下文的开始标签
+// 参数：fctx - 文件上下文指针
+// 返回值：开始标签值
+// 调用时机：需要解析记录信息时
 static u4_t fctx_begtag (fctx_t* fctx) {
-    u4_t begtag = fctx->begtag;
-    if( begtag == 0 )
-        begtag = fctx->begtag = rdFlash1(fctx->faddr);
-    return begtag;
+    if( fctx->begtag == 0 )              // 如果缓存为空
+        fctx->begtag = rdFlash1(fctx->faddr);  // 从Flash读取开始标签
+    return fctx->begtag;                 // 返回缓存的标签值
 }
 
+// 功能：获取文件上下文的结束标签
+// 参数：fctx - 文件上下文指针
+// 返回值：结束标签值
+// 调用时机：需要获取记录长度或CRC信息时
 static u4_t fctx_endtag (fctx_t* fctx) {
-    u4_t endtag = fctx->endtag;
-    if( endtag == 0 ) {
-        u4_t begtag = fctx_begtag(fctx);
-        u4_t faddr = fctx->faddr + 4 + FSTAG_len(begtag);
-        endtag = fctx->endtag = rdFlash1(faddr);
+    if( fctx->endtag == 0 ) {            // 如果缓存为空
+        u4_t begtag = fctx_begtag(fctx); // 获取开始标签
+        u2_t len = FSTAG_len(begtag);    // 提取记录长度
+        // 从记录末尾读取结束标签
+        fctx->endtag = rdFlash1(fctx->faddr + len + 4);
     }
-    return endtag;
+    return fctx->endtag;                 // 返回缓存的标签值
 }
 
+// ================================================================================
+// CRC校验和哈希计算
+// ================================================================================
+
+// 功能：计算数据CRC校验值 - 使用kwcrc算法
+// 参数：crc - 初始CRC值，data - 数据缓冲区，len - 数据长度
+// 返回值：计算后的CRC值
+// 调用时机：写入记录前计算校验值，验证记录完整性时
 static u2_t dataCrc (u2_t crc, const u1_t* data, uint len) {
-    u1_t a=crc>>8, b=crc&0xFF;
-    for( int i=0; i<len; i++ ) {
-        b += (a += data[i]);
+    for( uint i=0; i<len; i++ ) {
+        crc = kwcrc(crc, data[i]);       // 逐字节计算CRC
     }
-    while( -len & 3 ) {
-        b += a;
-        len++;
-    }
-    return (a<<8)|b;
+    return crc;                          // 返回最终CRC值
 }
 
+// 功能：计算文件名CRC哈希值 - 用于快速文件查找
+// 参数：fn - 文件名字符串
+// 返回值：文件名的CRC哈希值
+// 调用时机：文件查找、创建、重命名操作时
 static u4_t fnCrc (const char* fn) {
-    u4_t crc = 0;
-    while( *fn++ )
-        crc = UJ_UPDATE_CRC(crc,*fn);
-    return UJ_FINISH_CRC(crc);
+    return dataCrc(CRC_INI, (const u1_t*)fn, strlen(fn));  // 计算文件名CRC
 }
 
+// ================================================================================
+// Flash空间管理
+// ================================================================================
+
+// 功能：检查Flash空间是否充足
+// 参数：reqbytes - 请求的字节数
+// 返回值：1表示空间不足，0表示空间充足
+// 调用时机：写入数据前检查可用空间
 static int isFlashFull (u4_t reqbytes) {
-    int emergency = 0;
-    reqbytes = (reqbytes + 3) & ~3;
-    while( flashWP + reqbytes > flashFsMax() || nextIno >= MAX_INO-2 ) {
-        if( emergency == 2 ) {
-            // No space even after an emergency clean up
-            errno = ENOSPC;
-            return -1;
-        }
-        fs_gc(emergency);
-        emergency++;
+    u4_t flashFsSize = flashFsMax() - flashFsBeg();     // 计算分区总大小
+    u4_t flashFsUsed = flashWP - flashFsBeg();          // 计算已使用空间
+    u4_t flashFsFree = flashFsSize - flashFsUsed;       // 计算剩余空间
+    
+    // 保留一定的安全边界，避免空间完全耗尽
+    if( flashFsFree < reqbytes + 512 ) {                 // 预留512字节缓冲
+        if( flashFsUsed*2 < flashFsSize && !emergency )  // 如果使用率<50%且非紧急情况
+            return 1;                                    // 建议进行垃圾回收
+        if( flashFsFree < reqbytes + 64 )                // 如果真的空间不足
+            return 1;                                    // 必须进行垃圾回收
     }
-    return 0;
+    return 0;                                            // 空间充足
 }
 
-// Return len filename + zero byte
-int fs_fnNormalize (const char* fn, char* wb, int maxsz) {
-    int ri = 0, wi = 0;
-    wb[0] = 0;
-    if( maxsz <= 2 ) {
-        errno = ENAMETOOLONG;
-        return 0;
-    }
-    if( fn[0] != '/' ) {
-        wi = strlen(cwd);
-        if( wi+2 >= maxsz ) {
-            errno = ENAMETOOLONG;
-            return 0;
-        }
-        strcpy(wb, cwd);
-    } else {
-        ri = wi = 1;
-        wb[0] = '/';
-    }
-    int c;
-    while( 1 ) {
-        // Start of path syllable - previous char is /
-        c = fn[ri];
-        if( c=='/' ) {
-            ri++;                 // ignore double slash
-            continue;
-        }
-        if( c=='.' && (fn[ri+1] == '/' || fn[ri+1] == 0) ) {
-            ri += 2 - !fn[ri+1];  // ignore ./ or .\0
-            continue;
-        }
-        if( c=='.' && fn[ri+1] == '.' && (fn[ri+2] == '/' || fn[ri+2] == 0) ) {
-            ri += 3 - !fn[ri+2];  // skip ../ and move back one syllable
-            if( wi == 1 )
-                continue;  // root slash
-            do {
-                wi -= 1;
-            } while( wb[wi-1] != '/');
-            continue;
-        }
-        if( c == 0 ) {
-            if( wi > 1 )
-                wi -= 1;  // remove trailing /
-            wb[wi] = 0;
-            return wi+1;
-        }
-        while( 1 ) {
-            c = fn[ri];
-            if( c==0 ) {
-                wb[wi] = 0;
-                return wi+1;
-            }
-            wb[wi++] = c;
-            if( wi+2 >= maxsz ) {
-                wb[wi] = 0;
-                errno = ENAMETOOLONG;
-                return 0;
-            }
-            ri++;
-            if( c=='/' )
-                break;
-        }
-    }
-}
+// ================================================================================
+// 文件名处理和验证
+// ================================================================================
 
-
+// 功能：设置文件上下文到指定地址
+// 参数：fctx - 文件上下文，faddr - Flash地址
+// 返回值：无
+// 调用时机：开始处理新记录时
 static void fctx_setTo (fctx_t* fctx, u4_t faddr) {
-    memset(fctx, 0, sizeof(*fctx));
-    fctx->faddr = faddr;
+    fctx->faddr = faddr;                 // 设置地址
+    fctx->begtag = 0;                    // 清空标签缓存
+    fctx->endtag = 0;                    // 强制重新读取
 }
 
-
+// 功能：检查和规范化文件名
+// 参数：fn - 输入文件名
+// 返回值：规范化后的文件名长度，0表示失败
+// 调用时机：所有文件操作前的文件名验证
 static int checkFilename (const char* fn) {
-    if( fn == NULL ) {
-        errno = EFAULT;
+    if( fn == NULL ) {                   // 空指针检查
+        errno = EFAULT;                  // 设置错误码
         return 0;
     }
-    char* wb = (char*)&auxbuf.u4[3];
-    int fnlen = auxbuf.u4[0] = fs_fnNormalize(fn, wb, FS_MAX_FNSIZE);
+    char* wb = (char*)&auxbuf.u4[3];     // 使用辅助缓冲区
+    int fnlen = auxbuf.u4[0] = fs_fnNormalize(fn, wb, FS_MAX_FNSIZE);  // 规范化文件名
 #if defined(CFG_linux)
+    // Linux环境下的特殊处理：检查是否为s2路径
     if( strncmp(wb, "/s2/", 3) != 0 || (wb[3] != 0 && wb[3] != '/') ) {
-        // branch out into linux FS
-        return -1;
+        return -1;                       // 分支到Linux文件系统
     }
 #endif // defined(CFG_linux)
-    return fnlen;
+    return fnlen;                        // 返回规范化后的长度
 }
 
+// ================================================================================
+// 文件查找系统
+// ================================================================================
 
+// 功能：在Flash中查找指定文件
+// 参数：fctx - 文件上下文，fn - 文件名（NULL表示使用缓存的文件名）
+// 返回值：0表示找到，-1表示未找到
+// 调用时机：文件打开、状态查询等操作时
+// 查找策略：从Flash末尾向前扫描，处理重命名和删除操作
 static int fs_findFile (fctx_t* fctx, const char* fn) {
     int fnlen;
-    if( fn != NULL ) {
-        fnlen = checkFilename(fn);
-        if( fnlen == 0 )
+    if( fn != NULL ) {                   // 如果提供了文件名
+        fnlen = checkFilename(fn);       // 检查和规范化文件名
+        if( fnlen == 0 )                 // 文件名无效
             return -1;
     } else {
-        // Caller already did checkFilename!
-        fnlen = auxbuf.u4[0];
+        fnlen = auxbuf.u4[0];            // 调用者已经进行了checkFilename
     }
-    char* wb = (char*)&auxbuf.u1[12];
-    u4_t seekcrc = auxbuf.u4[1] = fnCrc(wb);
-    u4_t faddr = flashWP;  // end of last record
+    
+    char* wb = (char*)&auxbuf.u1[12];    // 获取规范化后的文件名
+    u4_t seekcrc = auxbuf.u4[1] = fnCrc(wb);  // 计算文件名CRC用于快速匹配
+    u4_t faddr = flashWP;                // 从Flash写指针开始（最新记录）
+    
+    // 从后向前遍历所有记录
     while( faddr > flashFsBeg() ) {
-        u4_t endtag = rdFlash1(faddr-4);
-        u4_t len = FSTAG_len(endtag);
-        faddr -= len+8;
-        u4_t begtag = rdFlash1(faddr);
-        u1_t cmd = FSTAG_cmd(begtag);
-        if( cmd == FSCMD_DATA )
+        u4_t endtag = rdFlash1(faddr-4); // 读取前一个记录的结束标签
+        u4_t len = FSTAG_len(endtag);    // 获取记录长度
+        faddr -= len+8;                  // 计算记录起始地址
+        u4_t begtag = rdFlash1(faddr);   // 读取开始标签
+        u1_t cmd = FSTAG_cmd(begtag);    // 获取命令类型
+        
+        if( cmd == FSCMD_DATA )          // 跳过数据记录
             continue;
-        u4_t fncrc = rdFlash1(faddr+4);
-        if( seekcrc == fncrc ) {
+            
+        u4_t fncrc = rdFlash1(faddr+4);  // 读取记录中的文件名CRC
+        if( seekcrc == fncrc ) {         // CRC匹配，可能找到目标文件
             if( cmd == FSCMD_RENAME || cmd == FSCMD_DELETE )
-                break;
-            assert(cmd == FSCMD_FILE);
+                break;                   // 文件已被重命名或删除
+            assert(cmd == FSCMD_FILE);   // 应该是文件创建记录
+            // 找到文件，设置上下文
             fctx_setTo(fctx, faddr);
             fctx->begtag = begtag;
             fctx->endtag = endtag;
-            return 0;
+            return 0;                    // 成功找到
         }
+        
+        // 处理重命名操作：如果当前记录是重命名且新名匹配，则继续查找旧名
         if( cmd == FSCMD_RENAME && seekcrc == rdFlash1(faddr+8) )
-            seekcrc = fncrc;
+            seekcrc = fncrc;             // 更新查找目标为旧文件名CRC
     }
-    errno = ENOENT;
+    
+    errno = ENOENT;                      // 文件不存在
     return -1;
 }
 
@@ -1119,112 +1190,142 @@ void fs_gc (int emergency) {
 }
 
 
+// ================================================================================
+// 文件系统初始化和管理函数
+// ================================================================================
+
+// 功能：文件系统擦除操作 - 完全重置文件系统
+// 参数：无
+// 返回值：无
+// 调用时机：系统格式化或完全重置时
 void fs_erase () {
-    sys_iniFlash ();
-    // sys_eraseFlash(FLASH_BEG_A, FS_PAGE_CNT);
-    fs_smartErase (FLASH_BEG_A, FS_PAGE_CNT);
-    fsSection = -1;  // unlock fs_ini
+    sys_iniFlash ();                     // 初始化Flash硬件
+    // sys_eraseFlash(FLASH_BEG_A, FS_PAGE_CNT);  // 原始的整块擦除
+    fs_smartErase (FLASH_BEG_A, FS_PAGE_CNT);    // 智能擦除，跳过已擦除页
+    fsSection = -1;                      // 解锁fs_ini，允许重新初始化
 }
 
+// 功能：文件系统初始化 - 设置加密密钥并检查文件系统状态
+// 参数：key - 4个32位加密密钥数组
+// 返回值：0表示成功，-1表示失败
+// 调用时机：系统启动时进行文件系统初始化
 int fs_ini (u4_t key[4]) {
-    if( fsSection != -1 )
-        return -1;
-    sys_iniFlash();
-    if( key ) {
-        memcpy(flashKey, key, sizeof(flashKey));
+    if( fsSection != -1 )                // 检查是否已经初始化
+        return -1;                       // 已初始化，拒绝重复初始化
+    sys_iniFlash();                      // 初始化Flash硬件接口
+    if( key ) {                          // 如果提供了加密密钥
+        memcpy(flashKey, key, sizeof(flashKey));  // 复制密钥到全局变量
         // LOG(MOD_SYS|INFO, "FS_KEY = %08X-%08X-%08X-%08X", key[0], key[1], key[2], key[3])
     }
-    return fs_ck();
+    return fs_ck();                      // 检查并恢复文件系统状态
 }
 
+// ================================================================================
+// 文件系统调试和诊断
+// ================================================================================
 
+// 调试输出格式定义 - 用于fs_dump函数的格式化输出
 static const char* const CMD_NAMES[] = {
-    "FILE", "DATA", "RENAME", "DELETE"
+    "FILE", "DATA", "RENAME", "DELETE"  // 记录类型名称数组
 };
-#define FSDMP_ADDR_FMT "[%08X] "
-#define FSDMP_PFX_FMT FSDMP_ADDR_FMT "%-6s ino=%-5d "
-#define FSDMP_DFLT_FMT FSDMP_PFX_FMT "[%08X] %10d %s"
-#define FSDMP_RENAME_FMT FSDMP_PFX_FMT "[%08X] [%08X] %s => %s"
-#define FSDMP_DATA_SRT_FMT FSDMP_PFX_FMT "%04X|%-5d %02X %02X %02X %02X / %d"
-#define FSDMP_DATA_LNG_FMT FSDMP_PFX_FMT "%04X|%-5d %02X %02X %02X %02X .. %02X %02X %02X %02X/%d"
+#define FSDMP_ADDR_FMT "[%08X] "         // 地址格式
+#define FSDMP_PFX_FMT FSDMP_ADDR_FMT "%-6s ino=%-5d "  // 前缀格式
+#define FSDMP_DFLT_FMT FSDMP_PFX_FMT "[%08X] %10d %s"  // 默认记录格式
+#define FSDMP_RENAME_FMT FSDMP_PFX_FMT "[%08X] [%08X] %s => %s"  // 重命名记录格式
+#define FSDMP_DATA_SRT_FMT FSDMP_PFX_FMT "%04X|%-5d %02X %02X %02X %02X / %d"     // 短数据记录格式
+#define FSDMP_DATA_LNG_FMT FSDMP_PFX_FMT "%04X|%-5d %02X %02X %02X %02X .. %02X %02X %02X %02X/%d"  // 长数据记录格式
 
+// 功能：转储文件系统内容 - 详细输出所有记录用于调试
+// 参数：_LOG - 日志输出函数指针，NULL时使用默认log_msg
+// 返回值：1表示Flash区域干净，0表示存在脏数据
+// 调用时机：系统调试、故障诊断时
 int fs_dump (void (*_LOG)(u1_t mod_level, const char* fmt, ...)) {
-    if( _LOG == NULL )
-        _LOG = log_msg;
+    if( _LOG == NULL )                   // 如果未提供日志函数
+        _LOG = log_msg;                  // 使用默认日志函数
 
-    fctx_t* fctx = &fctxCache;
-    u4_t faddr = flashFsBeg();
-    u4_t fend  = flashFsMax();
-    u4_t magic = rdFlash1(faddr-4);
+    fctx_t* fctx = &fctxCache;           // 使用全局文件上下文缓存
+    u4_t faddr = flashFsBeg();           // 从分区开始地址
+    u4_t fend  = flashFsMax();           // 到分区结束地址
+    u4_t magic = rdFlash1(faddr-4);      // 读取分区魔数
 
+    // 输出分区头信息
     _LOG(MOD_SYS|INFO, "Dump of flash section %c%d", fsSection+'A', magic & 0xFFFF);
 
+    // 遍历所有记录
     while( faddr < fend ) {
-        fctx_setTo(fctx, faddr);
-        u4_t begtag = fctx_begtag(fctx);
-        u1_t cmd = FSTAG_cmd(begtag);
-        u2_t ino = FSTAG_ino(begtag);
-        u2_t len = FSTAG_len(begtag);
-        u2_t pad = FSTAG_pad(begtag);
+        fctx_setTo(fctx, faddr);         // 设置文件上下文到当前地址
+        u4_t begtag = fctx_begtag(fctx); // 读取开始标签
+        u1_t cmd = FSTAG_cmd(begtag);    // 提取命令类型
+        u2_t ino = FSTAG_ino(begtag);    // 提取inode编号
+        u2_t len = FSTAG_len(begtag);    // 提取记录长度
+        u2_t pad = FSTAG_pad(begtag);    // 提取填充字节数
 
+        // 检查是否到达已擦除区域
         if( begtag == decrypt1(faddr, FLASH_ERASED) )
             break;
 
+        // 检查记录长度是否超出边界
         if( faddr + len + 8 >= flashFsMax() ) {
             _LOG(MOD_SYS|ERROR, FSDMP_ADDR_FMT "len=%d+8 reaches beyond end of flash section", faddr, len);
             break;
         }
-        u4_t endtag = fctx_endtag(fctx);
-        u2_t endlen = FSTAG_len(endtag);
-        u2_t endpad = FSTAG_pad(endtag);
-        u2_t dcrc   = FSTAG_crc(endtag);
+        
+        u4_t endtag = fctx_endtag(fctx);  // 读取结束标签
+        u2_t endlen = FSTAG_len(endtag);  // 提取结束标签长度
+        u2_t endpad = FSTAG_pad(endtag);  // 提取结束标签填充
+        u2_t dcrc   = FSTAG_crc(endtag);  // 提取CRC校验值
 
+        // 验证记录格式完整性
         if( len != FSTAG_len(endtag) || pad + endpad > len || pad != 0 || len == 0 ) {
             _LOG(MOD_SYS|ERROR, FSDMP_ADDR_FMT "Mismatching len/beg/end/pad lengths: %d/%d pad=%d/%d len=%d",
                 faddr, len, endlen, pad, endpad, len);
             break;
         }
+        
+        // 处理非数据记录（FILE/RENAME/DELETE）
         if( cmd != FSCMD_DATA ) {
-            if( len > sizeof(auxbuf) ) {
+            if( len > sizeof(auxbuf) ) {  // 检查缓冲区大小
                 _LOG(MOD_SYS|ERROR, FSDMP_ADDR_FMT "Too large for auxbuf: len=%d > %d", faddr, len, (int)sizeof(auxbuf));
                 break;
             }
-            rdFlashN(faddr, auxbuf.u4, len/4+16);
-            u2_t xcrc = dataCrc(CRC_INI, &auxbuf.u1[4], len);
-            if( dcrc != xcrc ) {
+            rdFlashN(faddr, auxbuf.u4, len/4+16);  // 读取记录数据
+            u2_t xcrc = dataCrc(CRC_INI, &auxbuf.u1[4], len);  // 计算CRC
+            if( dcrc != xcrc ) {          // 验证CRC
                 _LOG(MOD_SYS|ERROR, FSDMP_ADDR_FMT "Mismatching data CRC: found=0x%04X - expecting=0x%04X", faddr, dcrc, xcrc);
                 break;
             }
-            char* fn = (char*)&auxbuf.u1[12];
-            if( cmd == FSCMD_RENAME ) {
-                char* fn2 = fn + strlen(fn) + 1;
+            char* fn = (char*)&auxbuf.u1[12];  // 获取文件名指针
+            if( cmd == FSCMD_RENAME ) {   // 重命名记录特殊处理
+                char* fn2 = fn + strlen(fn) + 1;  // 获取新文件名
                 _LOG(MOD_SYS|INFO, FSDMP_RENAME_FMT,
                     faddr, CMD_NAMES[cmd], ino, auxbuf.u4[1], auxbuf.u4[2], fn, fn2);
-            } else {
+            } else {                      // 其他记录标准输出
                 _LOG(MOD_SYS|INFO, FSDMP_DFLT_FMT,
                     faddr, CMD_NAMES[cmd], ino, auxbuf.u4[1], auxbuf.u4[2], fn);
             }
         } else {
+            // 处理数据记录 - 分块读取并计算CRC
             u4_t off = 0;
-            u1_t d0[4] = {0}, dn[4] = {0};
+            u1_t d0[4] = {0}, dn[4] = {0};  // 存储首尾4字节用于输出
             u4_t cpycnt = 0;
             u2_t xcrc = CRC_INI;
             while( off < len ) {
                 cpycnt = len - off;
                 if( cpycnt > AUXBUF_SZ4 )
                     cpycnt = AUXBUF_SZ4;
-                rdFlashN(faddr + off + 4, auxbuf.u4, cpycnt/4);
-                if( off == 0 )
+                rdFlashN(faddr + off + 4, auxbuf.u4, cpycnt/4);  // 读取数据块
+                if( off == 0 )            // 保存首4字节
                     memcpy(d0, &auxbuf.u1[0], 4);
-                if( off+cpycnt >= len )
+                if( off+cpycnt >= len )   // 保存尾4字节
                     memcpy(dn, &auxbuf.u1[cpycnt-4], 4);
-                xcrc = dataCrc(xcrc, auxbuf.u1, cpycnt);
+                xcrc = dataCrc(xcrc, auxbuf.u1, cpycnt);  // 累积CRC计算
                 off += cpycnt;
             }
-            if( xcrc != dcrc ) {
+            if( xcrc != dcrc ) {          // 验证数据完整性
                 _LOG(MOD_SYS|ERROR, FSDMP_ADDR_FMT "Mismatching data CRC: found=0x%04X - expecting=0x%04X", faddr, dcrc, xcrc);
                 break;
             }
+            // 根据数据长度选择输出格式
             if( len == 4 ) {
                 _LOG(MOD_SYS|INFO, FSDMP_DATA_SRT_FMT,
                     faddr, CMD_NAMES[cmd], ino, dcrc, len, d0[0], d0[1], d0[2], d0[3], endpad);
@@ -1234,8 +1335,10 @@ int fs_dump (void (*_LOG)(u1_t mod_level, const char* fmt, ...)) {
                     d0[0], d0[1], d0[2], d0[3], dn[0], dn[1], dn[2], dn[3], endpad);
             }
         }
-        faddr += len + 8;
+        faddr += len + 8;                 // 移动到下一记录
     }
+    
+    // 检查剩余Flash区域是否干净
     int clean = 1;
     u4_t fsend = faddr;
     int dirtcnt = 0;
@@ -1244,23 +1347,24 @@ int fs_dump (void (*_LOG)(u1_t mod_level, const char* fmt, ...)) {
         if( len > AUXBUF_SZ4 )
             len = AUXBUF_SZ4;
         len /= 4;
-        sys_readFlash(faddr, auxbuf.u4, len);
+        sys_readFlash(faddr, auxbuf.u4, len);  // 直接读取（无解密）
         int dirtbeg = -1, dirtend = -1;
         for( int i=0; i<len; i++ ) {
-            if( auxbuf.u4[i] != FLASH_ERASED ) {
+            if( auxbuf.u4[i] != FLASH_ERASED ) {  // 检查是否为擦除状态
                 if( dirtbeg == -1 )
                     dirtbeg = i;
                 dirtend = i;
-                clean = 0;
+                clean = 0;                // 发现脏数据
             }
         }
+        // 输出脏数据详情（限制数量避免日志过多）
         if( dirtcnt < 200 && dirtbeg != -1 && (_LOG != log_msg || log_shallLog(MOD_SYS|ERROR)) ) {
             int di = dirtbeg;
             while( di < dirtend ) {
                 dbuf_t dbuf;
                 log_special(MOD_SYS|ERROR, &dbuf);
                 int off = dbuf.pos;
-                xprintf(&dbuf, "[%08X] DIRT: ", faddr);
+                xprintf(&dbuf, "[%08X] DIRT: ", faddr);  // 标记脏数据
                 for( int i=0; i<8 && di<=dirtend; i++,di++ )
                     xprintf(&dbuf, "%08X ", auxbuf.u4[di]);
                 xeos(&dbuf);
@@ -1274,12 +1378,14 @@ int fs_dump (void (*_LOG)(u1_t mod_level, const char* fmt, ...)) {
         }
         faddr += len*4;
     }
+    
+    // 输出最终检查结果
     if( clean ) {
         _LOG(MOD_SYS|INFO, FSDMP_ADDR_FMT "End of file system - start of cleared flash", fsend);
     } else {
         _LOG(MOD_SYS|ERROR, FSDMP_ADDR_FMT "End of file system - rest of flash not clean", fsend);
     }
-    return clean;
+    return clean;                        // 返回Flash清洁状态
 }
 
 

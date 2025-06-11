@@ -1,0 +1,86 @@
+graph TB
+    subgraph "客户端层"
+        C1[Web浏览器]
+        C2[管理工具]
+        C3[监控系统]
+    end
+
+    subgraph "通用Web服务层"
+        W1[web.c - HTTP服务器核心]
+        W2[事件驱动处理]
+        W3[路由系统]
+        W4[静态文件服务]
+    end
+
+    subgraph "Linux平台Web扩展层"
+        L1[web_linux.c - 平台适配]
+        L2[SYS_HANDLERS路由表]
+        L3[handle_config处理器]
+        L4[AUTH_HANDLERS认证表]
+    end
+
+    subgraph "API处理层"
+        A1[配置管理API]
+        A2[handle_config_GET]
+        A3[JSON编码器]
+        A4[响应构建]
+    end
+
+    subgraph "系统配置层"
+        S1[s2conf配置系统]
+        S2[conf_params配置表]
+        S3[参数类型管理]
+        S4[配置来源追踪]
+    end
+
+    subgraph "认证扩展层 (预留)"
+        AUTH1[web_authini初始化]
+        AUTH2[用户身份验证]
+        AUTH3[会话管理]
+        AUTH4[权限控制]
+    end
+
+    %% 客户端访问流程
+    C1 -->|"GET /api/config"| W1
+    C2 -->|"配置查询"| W1
+    C3 -->|"状态监控"| W1
+
+    %% Web服务层处理流程
+    W1 --> W2
+    W2 --> W3
+    W3 -->|"路由匹配"| L2
+
+    %% 平台扩展层处理
+    L2 -->|"J_config路由"| L3
+    L3 -->|"GET方法"| A2
+    L4 -.->|"认证路由(预留)"| AUTH1
+
+    %% API处理流程
+    A2 --> A3
+    A3 --> A4
+    A4 -->|"JSON响应"| W1
+
+    %% 配置系统访问
+    A2 -->|"遍历配置"| S2
+    S2 --> S3
+    S2 --> S4
+
+    %% 认证系统(预留)
+    AUTH1 -.-> AUTH2
+    AUTH2 -.-> AUTH3
+    AUTH3 -.-> AUTH4
+
+    %% 样式定义
+    classDef clientLayer fill:#e1f5fe
+    classDef webLayer fill:#f3e5f5
+    classDef platformLayer fill:#e8f5e8
+    classDef apiLayer fill:#fff3e0
+    classDef configLayer fill:#fce4ec
+    classDef authLayer fill:#f1f8e9,stroke-dasharray: 5 5
+
+    class C1,C2,C3 clientLayer
+    class W1,W2,W3,W4 webLayer
+    class L1,L2,L3,L4 platformLayer
+    class A1,A2,A3,A4 apiLayer
+    class S1,S2,S3,S4 configLayer
+    class AUTH1,AUTH2,AUTH3,AUTH4 authLayer 

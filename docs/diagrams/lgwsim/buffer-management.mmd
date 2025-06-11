@@ -1,0 +1,145 @@
+graph TD
+    subgraph "环形缓冲区系统"
+        subgraph "缓冲区结构"
+            BUFFER["接收缓冲区<br/>rx_pkts[RX_NPKTS+1]<br/>容量: 1001个数据包<br/>总大小: rxblen字节"]
+            
+            PKT_SIZE["数据包大小<br/>sizeof(rx_pkts[0])<br/>LGW1: struct lgw_pkt_rx_s<br/>LGW2: sx1301ar_rx_pkt_t"]
+            
+            CAPACITY["缓冲区容量<br/>RX_NPKTS = 1000<br/>实际分配1001个<br/>便于索引计算"]
+        end
+        
+        subgraph "索引管理"
+            RIDX["读取索引<br/>rx_ridx<br/>指向下一个读取位置<br/>应用消费数据包"]
+            
+            WIDX["写入索引<br/>rx_widx<br/>指向下一个写入位置<br/>套接字接收数据"]
+            
+            DSC["丢弃计数器<br/>rx_dsc<br/>缓冲区满时丢弃字节数<br/>溢出处理机制"]
+        end
+        
+        subgraph "空间计算宏"
+            RBFREE["可用空间计算<br/>rbfree(widx,ridx,len)<br/>= widx >= ridx ?<br/>  len-widx : ridx-widx-1"]
+            
+            RBUSED["已用空间计算<br/>rbused(widx,ridx,len)<br/>= widx >= ridx ?<br/>  widx-ridx : len-ridx+widx"]
+        end
+        
+        subgraph "写入操作流程"
+            WRITE_START["开始写入<br/>read_socket()调用<br/>套接字数据到达"]
+            
+            CALC_WRITE_POS["计算写入位置<br/>rxbuf = &rx_pkts[rx_widx]<br/>定位缓冲区指针"]
+            
+            CHECK_SPACE{"检查可用空间<br/>rbfree() > 0?"}
+            
+            NORMAL_WRITE["正常写入<br/>read(fd, rxbuf, rxlen)<br/>更新rx_widx"]
+            
+            OVERFLOW_MODE["溢出模式<br/>启动丢弃机制<br/>设置rx_dsc"]
+            
+            DISCARD_BYTES["丢弃字节<br/>rx_dsc += n<br/>等待数据包边界"]
+            
+            PKT_BOUNDARY["数据包边界<br/>rx_dsc % pkt_size == 0<br/>重置丢弃模式"]
+            
+            UPDATE_WIDX["更新写入索引<br/>rx_widx = (rx_widx+n) % rxblen<br/>环形递增"]
+        end
+        
+        subgraph "读取操作流程"
+            READ_START["开始读取<br/>lgw_receive()或<br/>sx1301ar_fetch()调用"]
+            
+            CHECK_AVAIL{"检查可用数据<br/>rbused() >= pkt_size?"}
+            
+            COPY_DATA["复制数据包<br/>pkt_data[n] = rx_pkts[ridx]<br/>按结构体复制"]
+            
+            UPDATE_RIDX["更新读取索引<br/>rx_ridx = (rx_ridx+pkt_size) % rxblen<br/>环形递增"]
+            
+            RETURN_COUNT["返回数据包计数<br/>npkts<br/>成功读取的数量"]
+            
+            NO_DATA_AVAIL["无数据可读<br/>返回0<br/>缓冲区空"]
+        end
+        
+        subgraph "环形缓冲区状态示例"
+            STATE1["状态1: 正常写入<br/>ridx=0, widx=300<br/>已用:300, 可用:700<br/>████████░░░░░░░░░░░░"]
+            
+            STATE2["状态2: 环形回绕<br/>ridx=800, widx=200<br/>已用:400, 可用:600<br/>████░░░░░░░░░░░░████"]
+            
+            STATE3["状态3: 接近满<br/>ridx=100, widx=99<br/>已用:999, 可用:1<br/>███████████████████░"]
+            
+            STATE4["状态4: 溢出处理<br/>ridx=100, widx=99, dsc=50<br/>丢弃模式激活<br/>████████████████❌❌❌"]
+        end
+        
+        subgraph "CCA消息特殊处理"
+            CCA_DETECT["CCA消息检测<br/>freq_hz == MAGIC_CCA_FREQ<br/>特殊控制消息"]
+            
+            CCA_EXTRACT["提取CCA信息<br/>cca_msg = *(struct cca_msg*)<br/>更新信道状态"]
+            
+            CCA_ADVANCE["推进读索引<br/>跳过CCA消息<br/>不返回给应用"]
+        end
+    end
+    
+    subgraph "内存布局示意"
+        LAYOUT["内存布局<br/>┌─────────────────────────────────────┐<br/>│ rx_pkts[0] │ rx_pkts[1] │ ... │ rx_pkts[1000] │<br/>└─────────────────────────────────────┘<br/>   ↑                                      ↑<br/>  base                              base+rxblen"]
+        
+        ALIGNMENT["字节对齐<br/>每个数据包结构体<br/>按平台对齐要求<br/>保证访问效率"]
+        
+        WRAP_AROUND["环形特性<br/>索引到达末尾时<br/>自动回绕到开头<br/>index % buffer_len"]
+    end
+    
+    %% 写入流程连接
+    WRITE_START --> CALC_WRITE_POS
+    CALC_WRITE_POS --> CHECK_SPACE
+    CHECK_SPACE -->|有空间| NORMAL_WRITE
+    CHECK_SPACE -->|无空间| OVERFLOW_MODE
+    NORMAL_WRITE --> UPDATE_WIDX
+    OVERFLOW_MODE --> DISCARD_BYTES
+    DISCARD_BYTES --> PKT_BOUNDARY
+    PKT_BOUNDARY --> WRITE_START
+    
+    %% 读取流程连接
+    READ_START --> CHECK_AVAIL
+    CHECK_AVAIL -->|有数据| COPY_DATA
+    CHECK_AVAIL -->|无数据| NO_DATA_AVAIL
+    COPY_DATA --> UPDATE_RIDX
+    UPDATE_RIDX --> RETURN_COUNT
+    
+    %% CCA处理连接
+    UPDATE_WIDX --> CCA_DETECT
+    CCA_DETECT -->|是CCA| CCA_EXTRACT
+    CCA_DETECT -->|普通包| WRITE_START
+    CCA_EXTRACT --> CCA_ADVANCE
+    CCA_ADVANCE --> WRITE_START
+    
+    %% 结构关系连接
+    BUFFER --> PKT_SIZE
+    PKT_SIZE --> CAPACITY
+    RIDX --> RBFREE
+    WIDX --> RBFREE
+    DSC --> RBUSED
+    
+    %% 状态示例连接
+    STATE1 --> STATE2
+    STATE2 --> STATE3
+    STATE3 --> STATE4
+    
+    %% 内存布局连接
+    LAYOUT --> ALIGNMENT
+    ALIGNMENT --> WRAP_AROUND
+    
+    %% 样式定义
+    classDef bufferStruct fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef indexMgmt fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef macros fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef writeFlow fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef readFlow fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    classDef states fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    classDef ccaSpecial fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef memory fill:#fce4ec,stroke:#ad1457,stroke-width:2px
+    classDef decision fill:#ffecb3,stroke:#ff8f00,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    
+    class BUFFER,PKT_SIZE,CAPACITY bufferStruct
+    class RIDX,WIDX,DSC indexMgmt
+    class RBFREE,RBUSED macros
+    class WRITE_START,CALC_WRITE_POS,NORMAL_WRITE,UPDATE_WIDX writeFlow
+    class READ_START,COPY_DATA,UPDATE_RIDX,RETURN_COUNT readFlow
+    class STATE1,STATE2,STATE3,STATE4 states
+    class CCA_DETECT,CCA_EXTRACT,CCA_ADVANCE ccaSpecial
+    class LAYOUT,ALIGNMENT,WRAP_AROUND memory
+    class CHECK_SPACE,CHECK_AVAIL decision
+    class OVERFLOW_MODE,DISCARD_BYTES,PKT_BOUNDARY,NO_DATA_AVAIL error 

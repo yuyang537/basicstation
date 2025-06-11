@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant App as "应用层(S2E)"
+    participant RAL as "RAL接口"
+    participant Master as "主进程"
+    participant Slave as "从进程"
+    participant LGW as "libloragw"
+    participant HW as "SX130X硬件"
+
+    Note over App,HW: RAL初始化和配置阶段
+    
+    App->>RAL: ral_config(hwspec, json, upchs)
+    RAL->>Master: 解析配置，启动从进程
+    
+    Master->>Slave: fork() + execSlave()
+    Note over Master,Slave: 创建管道通信
+    
+    Master->>Slave: RAL_CMD_CONFIG<br/>发送硬件配置和信道分配
+    Slave->>LGW: sx130xconf_start()
+    LGW->>HW: 配置芯片参数
+    HW-->>LGW: 配置确认
+    LGW-->>Slave: 配置完成
+    Slave-->>Master: 配置成功响应
+    Master-->>RAL: 配置完成
+    RAL-->>App: 返回成功
+
+    Note over App,HW: 运行时数据处理
+    
+    loop 时间同步
+        Master->>Slave: RAL_CMD_TIMESYNC
+        Slave->>LGW: ral_getTimesync()
+        LGW->>HW: 读取硬件时间戳
+        HW-->>LGW: 时间戳数据
+        LGW-->>Slave: 时间同步结果
+        Slave-->>Master: RAL_TIMESYNC_RESP
+        Master->>Master: ts_updateTimesync()
+    end
+
+    loop 接收处理
+        HW->>LGW: 新的LoRa数据包
+        LGW->>Slave: lgw_receive()
+        Slave->>Slave: 数据包处理和转换
+        Slave-->>Master: RAL_CMD_RX<br/>包含接收数据
+        Master->>App: s2e_addRxjob()
+        App->>App: 上行数据包处理
+    end
+
+    App->>RAL: ral_tx(txjob)<br/>发送下行数据
+    RAL->>Master: 转换发送参数
+    Master->>Slave: RAL_CMD_TX<br/>发送命令和数据
+    Slave->>LGW: lgw_send()
+    LGW->>HW: 无线发送
+    HW-->>LGW: 发送状态
+    LGW-->>Slave: 发送结果
+    Slave-->>Master: RAL_RESPONSE
+    Master-->>RAL: 发送状态
+    RAL-->>App: 返回发送结果 

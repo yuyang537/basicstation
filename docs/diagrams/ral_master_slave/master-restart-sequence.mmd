@@ -1,0 +1,113 @@
+sequenceDiagram
+    participant Master as 主进程<br/>ral_master.c
+    participant Timer as 定时器系统<br/>rt_timer
+    participant Slave as 从进程<br/>ral_slave.c
+    participant System as 系统内核<br/>fork/exec/signal
+    participant Hardware as 硬件<br/>SX130X芯片
+    
+    Note over Master,Hardware: 从进程异常检测和重启流程
+    
+    %% 异常检测阶段
+    Master->>Timer: 启动从进程监控定时器<br/>rt_setTimer(recheck_slave)
+    Timer-->>Master: 定时器触发(500ms间隔)
+    Master->>System: 检查从进程状态<br/>waitpid(WNOHANG)
+    
+    alt 从进程正常运行
+        System-->>Master: 进程存活，返回0
+        Master->>Timer: 设置下次检查定时器<br/>WAIT_SLAVE_PID_INTV
+    else 从进程异常退出
+        System-->>Master: 进程已退出，返回PID
+        Note over Master: 记录退出状态<br/>WIFEXITED/WIFSIGNALED
+        Master->>Master: 触发重启流程<br/>restart_slave()
+    end
+    
+    %% 重启准备阶段
+    Note over Master,Hardware: 清理和重启准备
+    Master->>Master: 增加重启计数<br/>++restartCnt
+    
+    alt 重启次数超限
+        Master->>Master: 致命错误退出<br/>rt_fatal("重启次数过多")
+    else 重启次数正常
+        Master->>Timer: 清除旧定时器<br/>rt_clrTimer(tmr/tsync)
+        Master->>Master: 关闭旧管道<br/>aio_close(up/dn)
+    end
+    
+    %% 进程终止阶段
+    alt 从进程仍然存活
+        Master->>System: 发送终止信号<br/>kill(pid, SIGTERM/SIGKILL)
+        Note over Master: 逐步升级信号强度<br/>killCnt <= 2: SIGTERM<br/>killCnt > 2: SIGKILL
+        Master->>Master: 增加杀死计数<br/>++killCnt
+        Master->>Timer: 设置重试定时器<br/>RETRY_KILL_INTV(100ms)
+        Timer-->>Master: 重试定时器触发
+        Master->>Master: 重复终止流程
+    else 从进程已死亡
+        Note over Master: 进程清理完成，开始创建新进程
+    end
+    
+    %% 新进程创建阶段
+    Master->>System: 创建通信管道<br/>pipe2(up, O_NONBLOCK)<br/>pipe2(dn, O_NONBLOCK)
+    System-->>Master: 返回管道文件描述符
+    
+    Master->>Master: 设置异步IO<br/>aio_open(pipe_read)
+    Master->>Master: 刷新日志缓冲区<br/>sys_flushLog()
+    
+    Master->>System: 创建子进程<br/>fork()
+    System-->>Master: 返回新进程PID
+    
+    %% 从进程初始化
+    Note over Slave,Hardware: 新从进程启动和配置
+    Master->>System: 关闭主进程不需要的管道端<br/>close(up[1], dn[0])
+    
+    par 主进程操作
+        Master->>Master: 记录新进程PID
+        Master->>Master: 发送配置给新进程<br/>send_config()
+        Master->>Master: 启动异步读取<br/>pipe_read()
+        Master->>Timer: 启动进程监控<br/>recheck_slave()
+    and 从进程操作  
+        Slave->>System: 设置执行环境<br/>execSlave()
+        System->>Slave: 重定向标准IO<br/>dup2(rdfd/wrfd)
+        System->>Slave: 设置环境变量<br/>SLAVE_IDX
+        System->>Slave: 执行station程序<br/>execv(--slave)
+        Slave->>Slave: 初始化异步IO<br/>sys_startupSlave()
+    end
+    
+    %% 配置传输阶段
+    Master->>Slave: 发送配置命令<br/>RAL_CMD_CONFIG
+    Note over Master,Slave: 配置数据包含：<br/>- JSON配置<br/>- 硬件规格<br/>- 区域码<br/>- 信道分配
+    
+    Slave->>Slave: 解析配置<br/>sx130xconf_parse_setup()
+    Slave->>Slave: 分配信道<br/>sx130xconf_challoc()
+    Slave->>Hardware: 初始化硬件<br/>sys_runRadioInit()
+    Slave->>Hardware: 启动芯片<br/>sx130xconf_start()
+    
+    Note over Slave,Hardware: 硬件启动可能需要8秒<br/>(如果启用LBT检测)
+    
+    Slave->>Slave: 保存配置参数<br/>pps_en/region/txpowAdjust
+    Slave->>Slave: 初始化时间会话<br/>ts_newXtimeSession()
+    Slave->>Timer: 启动接收轮询<br/>rx_polling()
+    
+    %% 时间同步建立
+    Slave->>Hardware: 执行时间同步测量<br/>ral_getTimesync()
+    Hardware-->>Slave: 返回时间同步数据<br/>quality + timesync_t
+    Slave->>Master: 发送时间同步响应<br/>RAL_CMD_TIMESYNC
+    
+    Master->>Master: 更新时间同步状态<br/>ts_updateTimesync()
+    Master->>Timer: 设置下次同步定时器<br/>基于质量确定延迟
+    
+    %% 运行状态确认
+    Master->>Timer: 重置重启计数<br/>restartCnt = 0
+    Note over Master,Hardware: 从进程重启完成，恢复正常运行
+    
+    %% 正常运行监控
+    loop 持续监控
+        Timer-->>Master: 监控定时器触发<br/>recheck_slave()
+        Master->>System: 检查进程状态<br/>is_slave_alive()
+        alt 进程正常
+            Master->>Timer: 设置下次检查<br/>WAIT_SLAVE_PID_INTV
+        else 进程异常
+            Master->>Master: 重新启动重启流程<br/>restart_slave()
+        end
+    end
+    
+    %% 样式和注释
+    Note over Master,Hardware: 重启流程特点：<br/>1. 渐进式信号升级(SIGTERM->SIGKILL)<br/>2. 重试限制防止无限循环<br/>3. 完整的配置重传<br/>4. 时间同步重建<br/>5. 持续状态监控 

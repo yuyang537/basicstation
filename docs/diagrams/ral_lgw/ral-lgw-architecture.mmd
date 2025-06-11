@@ -1,0 +1,138 @@
+graph TB
+    %% RAL LGW模块架构图 - SX1301/SX1302芯片抽象层实现
+
+    subgraph "应用层"
+        APP["BasicStation应用"]
+        S2E["S2E协议栈"]
+    end
+
+    subgraph "RAL抽象层接口"
+        RAL_API["RAL统一接口"]
+        RAL_API --> |"ral_tx()"| TX_API["发送接口"]
+        RAL_API --> |"ral_config()"| CFG_API["配置接口"]
+        RAL_API --> |"ral_getTimesync()"| SYNC_API["时间同步接口"]
+    end
+
+    subgraph "RAL LGW实现模块"
+        direction TB
+        
+        subgraph "参数转换层"
+            RPS_CONV["RPS参数转换"]
+            SF_MAP["扩频因子映射表"]
+            BW_MAP["带宽映射表"]
+            RPS_CONV --> SF_MAP
+            RPS_CONV --> BW_MAP
+        end
+
+        subgraph "发送处理"
+            TX_FUNC["ral_tx()"]
+            TX_STATUS["ral_txstatus()"]
+            TX_ABORT["ral_txabort()"]
+            TX_FUNC --> TX_STATUS
+            TX_FUNC --> TX_ABORT
+        end
+
+        subgraph "接收处理"
+            RX_POLL["rxpolling定时器"]
+            RX_PROC["接收数据处理"]
+            RX_QUEUE["接收队列管理"]
+            RX_POLL --> RX_PROC
+            RX_PROC --> RX_QUEUE
+        end
+
+        subgraph "时间同步"
+            SYNC_TMR["synctime定时器"]
+            TIME_SYNC["时间同步测量"]
+            PPS_HDLR["PPS处理"]
+            SYNC_TMR --> TIME_SYNC
+            TIME_SYNC --> PPS_HDLR
+        end
+
+        subgraph "配置管理"
+            CONFIG["ral_config()"]
+            HW_INIT["硬件初始化"]
+            CH_ALLOC["信道分配"]
+            CONFIG --> HW_INIT
+            CONFIG --> CH_ALLOC
+        end
+    end
+
+    subgraph "硬件抽象层"
+        direction LR
+        
+        subgraph "LGW1实现 (ral_lgw.c)"
+            LGW1_HAL["libloragw HAL"]
+            LGW1_REG["寄存器访问"]
+            LGW1_GPS["GPS/PPS支持"]
+            LGW1_HAL --> LGW1_REG
+            LGW1_HAL --> LGW1_GPS
+        end
+
+        subgraph "LGW2实现 (ral_lgw2.c)"
+            LGW2_AR["SX1301AR库"]
+            LGW2_SPI["SPI通信封装"]
+            LGW2_TREF["时间参考管理"]
+            LGW2_AR --> LGW2_SPI
+            LGW2_AR --> LGW2_TREF
+        end
+    end
+
+    subgraph "硬件层"
+        direction LR
+        
+        subgraph "SX1301系列"
+            SX1301["SX1301芯片"]
+            SX1301_IF["IF链路"]
+            SX1301_RF["RF前端"]
+            SX1301 --> SX1301_IF
+            SX1301 --> SX1301_RF
+        end
+
+        subgraph "SX1302系列"
+            SX1302["SX1302芯片"]
+            SX1302_TS["时间戳计数器"]
+            SX1302_RF["RF前端"]
+            SX1302 --> SX1302_TS
+            SX1302 --> SX1302_RF
+        end
+    end
+
+    %% 连接关系
+    APP --> S2E
+    S2E --> RAL_API
+    
+    TX_API --> TX_FUNC
+    CFG_API --> CONFIG
+    SYNC_API --> TIME_SYNC
+    
+    RPS_CONV --> TX_FUNC
+    RPS_CONV --> RX_PROC
+    
+    CONFIG --> LGW1_HAL
+    CONFIG --> LGW2_AR
+    
+    TX_FUNC --> LGW1_HAL
+    TX_FUNC --> LGW2_AR
+    
+    RX_POLL --> LGW1_HAL
+    RX_POLL --> LGW2_AR
+    
+    TIME_SYNC --> LGW1_GPS
+    TIME_SYNC --> LGW2_TREF
+    
+    LGW1_HAL --> SX1301
+    LGW1_HAL --> SX1302
+    LGW2_AR --> SX1301
+    
+    %% 样式定义
+    classDef appLayer fill:#e1f5fe
+    classDef ralLayer fill:#f3e5f5
+    classDef implLayer fill:#e8f5e8
+    classDef hwAbsLayer fill:#fff3e0
+    classDef hwLayer fill:#ffebee
+
+    class APP,S2E appLayer
+    class RAL_API,TX_API,CFG_API,SYNC_API ralLayer
+    class RPS_CONV,SF_MAP,BW_MAP,TX_FUNC,TX_STATUS,TX_ABORT,RX_POLL,RX_PROC,RX_QUEUE,SYNC_TMR,TIME_SYNC,PPS_HDLR,CONFIG,HW_INIT,CH_ALLOC implLayer
+    class LGW1_HAL,LGW1_REG,LGW1_GPS,LGW2_AR,LGW2_SPI,LGW2_TREF hwAbsLayer
+    class SX1301,SX1301_IF,SX1301_RF,SX1302,SX1302_TS,SX1302_RF hwLayer 
